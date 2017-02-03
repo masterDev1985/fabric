@@ -250,6 +250,12 @@
 			"revisionTime": "2014-10-17T13:07:13-07:00"
 		},
 		{
+			"checksumSHA1": "pxp2CJIkeVDSr+yV1AA/sYLK8ls=",
+			"path": "github.com/kardianos/govendor",
+			"revision": "55def62694d584554455ceed1a3b9bbf49273506",
+			"revisionTime": "2017-01-17T18:13:26Z"
+		},
+		{
 			"checksumSHA1": "BM6ZlNJmtKy3GBoWwg2X55gnZ4A=",
 			"path": "github.com/klauspost/crc32",
 			"revision": "cb6bfca970f6908083f26f39a79009d608efd5cd",
