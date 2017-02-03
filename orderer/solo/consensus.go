@@ -22,6 +22,7 @@ import (
 	"github.com/hyperledger/fabric/orderer/multichain"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/op/go-logging"
+	"github.com/cactus/go-statsd-client/statsd"
 )
 
 var logger = logging.MustGetLogger("orderer/solo")
@@ -33,6 +34,7 @@ type chain struct {
 	batchTimeout time.Duration
 	sendChan     chan *cb.Envelope
 	exitChan     chan struct{}
+	statsd       statsd.Statter
 }
 
 // New creates a new consenter for the solo consensus scheme.
@@ -48,11 +50,14 @@ func (solo *consenter) HandleChain(support multichain.ConsenterSupport) (multich
 }
 
 func newChain(support multichain.ConsenterSupport) *chain {
+	client, _ := statsd.NewClient("127.0.0.1:8125", "orderer-solo")
+
 	return &chain{
 		batchTimeout: support.SharedConfig().BatchTimeout(),
 		support:      support,
 		sendChan:     make(chan *cb.Envelope),
 		exitChan:     make(chan struct{}),
+		statsd:       client,
 	}
 }
 
@@ -93,6 +98,7 @@ func (ch *chain) main() {
 			for i, batch := range batches {
 				block := ch.support.CreateNextBlock(batch)
 				ch.support.WriteBlock(block, committers[i])
+				ch.statsd.Inc("blocks_written", 1, 1.0)
 			}
 			if len(batches) > 0 {
 				timer = nil
@@ -109,6 +115,7 @@ func (ch *chain) main() {
 			logger.Debugf("Batch timer expired, creating block")
 			block := ch.support.CreateNextBlock(batch)
 			ch.support.WriteBlock(block, committers)
+			ch.statsd.Inc("blocks_written", 1, 1.0)
 		case <-ch.exitChan:
 			logger.Debugf("Exiting")
 			return
