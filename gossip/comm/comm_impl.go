@@ -30,8 +30,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/identity"
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/op/go-logging"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -87,7 +87,7 @@ func NewCommInstanceWithServer(port int, idMapper identity.Mapper, peerIdentity 
 		selfCertHash:      certHash,
 		PKIID:             idMapper.GetPKIidOfCert(peerIdentity),
 		idMapper:          idMapper,
-		logger:            util.GetLogger(util.LOGGING_COMM_MODULE, fmt.Sprintf("%d", port)),
+		logger:            util.GetLogger(util.LoggingCommModule, fmt.Sprintf("%d", port)),
 		peerIdentity:      peerIdentity,
 		opts:              dialOpts,
 		port:              port,
@@ -112,8 +112,6 @@ func NewCommInstanceWithServer(port int, idMapper identity.Mapper, peerIdentity 
 		}()
 		proto.RegisterGossipServer(s, commInst)
 	}
-
-	commInst.logger.SetLevel(logging.WARNING)
 
 	return commInst, nil
 }
@@ -143,7 +141,7 @@ type commImpl struct {
 	selfCertHash      []byte
 	peerIdentity      api.PeerIdentityType
 	idMapper          identity.Mapper
-	logger            *util.Logger
+	logger            *logging.Logger
 	opts              []grpc.DialOption
 	connStore         *connectionStore
 	PKIID             []byte
@@ -388,20 +386,25 @@ func (c *commImpl) authenticateRemotePeer(stream stream) (common.PKIidType, erro
 	ctx := stream.Context()
 	remoteAddress := extractRemoteAddress(stream)
 	remoteCertHash := extractCertificateHashFromContext(ctx)
-	var sig []byte
 	var err error
+	var cMsg *proto.GossipMessage
+	var signer proto.Signer
 
 	// If TLS is detected, sign the hash of our cert to bind our TLS cert
 	// to the gRPC session
 	if remoteCertHash != nil && c.selfCertHash != nil {
-		sig, err = c.idMapper.Sign(c.selfCertHash)
-		if err != nil {
-			c.logger.Error("Failed signing self certificate hash:", err)
-			return nil, err
+		signer = func(msg []byte) ([]byte, error) {
+			return c.idMapper.Sign(msg)
+		}
+	} else { // If we don't use TLS, we have no unique text to sign,
+		//  so don't sign anything
+		signer = func(msg []byte) ([]byte, error) {
+			return msg, nil
 		}
 	}
 
-	cMsg := createConnectionMsg(c.PKIID, sig, c.peerIdentity)
+	cMsg = c.createConnectionMsg(c.PKIID, c.selfCertHash, c.peerIdentity, signer)
+
 	c.logger.Debug("Sending", cMsg, "to", remoteAddress)
 	stream.Send(cMsg)
 	m := readWithTimeout(stream, defConnTimeout)
@@ -433,7 +436,14 @@ func (c *commImpl) authenticateRemotePeer(stream stream) (common.PKIidType, erro
 
 	// if TLS is detected, verify remote peer
 	if remoteCertHash != nil && c.selfCertHash != nil {
-		err = c.idMapper.Verify(receivedMsg.PkiID, receivedMsg.Sig, remoteCertHash)
+		if !bytes.Equal(remoteCertHash, receivedMsg.Hash) {
+			return nil, fmt.Errorf("Expected %v in remote hash, but got %v", remoteCertHash, receivedMsg.Hash)
+		}
+		verifier := func(peerIdentity []byte, signature, message []byte) error {
+			pkiID := c.idMapper.GetPKIidOfCert(api.PeerIdentityType(peerIdentity))
+			return c.idMapper.Verify(pkiID, signature, message)
+		}
+		err = m.Verify(receivedMsg.Cert, verifier)
 		if err != nil {
 			c.logger.Error("Failed verifying signature from", remoteAddress, ":", err)
 			return nil, err
@@ -516,18 +526,23 @@ func readWithTimeout(stream interface{}, timeout time.Duration) *proto.GossipMes
 	}
 }
 
-func createConnectionMsg(pkiID common.PKIidType, sig []byte, cert api.PeerIdentityType) *proto.GossipMessage {
-	return &proto.GossipMessage{
+func (c *commImpl) createConnectionMsg(pkiID common.PKIidType, hash []byte, cert api.PeerIdentityType, signer proto.Signer) *proto.GossipMessage {
+	m := &proto.GossipMessage{
 		Tag:   proto.GossipMessage_EMPTY,
 		Nonce: 0,
 		Content: &proto.GossipMessage_Conn{
 			Conn: &proto.ConnEstablish{
+				Hash:  hash,
 				Cert:  cert,
 				PkiID: pkiID,
-				Sig:   sig,
 			},
 		},
 	}
+	if err := m.Sign(signer); err != nil {
+		c.logger.Panicf("Gossip failed to sign a message using the peer identity.\n Halting execution.\nActual error: %v", err)
+	}
+
+	return m
 }
 
 type stream interface {
@@ -543,7 +558,6 @@ func createGRPCLayer(port int) (*grpc.Server, net.Listener, grpc.DialOption, []b
 	var err error
 	var serverOpts []grpc.ServerOption
 	var dialOpts grpc.DialOption
-
 
 	keyFileName := fmt.Sprintf("key.%d.pem", rand.Int63())
 	certFileName := fmt.Sprintf("cert.%d.pem", rand.Int63())

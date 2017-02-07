@@ -19,9 +19,7 @@ package multichain
 import (
 	"fmt"
 
-	"github.com/hyperledger/fabric/common/cauthdsl"
 	"github.com/hyperledger/fabric/common/configtx"
-	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/orderer/common/sharedconfig"
 	ordererledger "github.com/hyperledger/fabric/orderer/ledger"
 	cb "github.com/hyperledger/fabric/protos/common"
@@ -29,6 +27,7 @@ import (
 	"github.com/op/go-logging"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/crypto"
 )
 
 var logger = logging.MustGetLogger("orderer/multichain")
@@ -41,21 +40,12 @@ func (xxx xxxCryptoHelper) VerifySignature(sd *cb.SignedData) error {
 	return nil
 }
 
-func (xxx xxxCryptoHelper) NewSignatureHeader() *cb.SignatureHeader {
-	return &cb.SignatureHeader{}
+func (xxx xxxCryptoHelper) NewSignatureHeader() (*cb.SignatureHeader, error) {
+	return &cb.SignatureHeader{}, nil
 }
 
-func (xxx xxxCryptoHelper) Sign(message []byte) []byte {
-	return message
-}
-
-// Signer is a temporary stub interface which will be implemented by the local MSP
-type Signer interface {
-	// NewSignatureHeader creates a SignatureHeader with the correct signing identity and a valid nonce
-	NewSignatureHeader() *cb.SignatureHeader
-
-	// Sign a message which should embed a signature header created by NewSignatureHeader
-	Sign(message []byte) []byte
+func (xxx xxxCryptoHelper) Sign(message []byte) ([]byte, error) {
+	return message, nil
 }
 
 // Manager coordinates the creation and access of chains
@@ -69,11 +59,26 @@ type Manager interface {
 	ProposeChain(env *cb.Envelope) cb.Status
 }
 
+type configResources struct {
+	configtx.Manager
+	sharedConfig sharedconfig.Manager
+}
+
+func (cr *configResources) SharedConfig() sharedconfig.Manager {
+	return cr.sharedConfig
+}
+
+type ledgerResources struct {
+	*configResources
+	ledger ordererledger.ReadWriter
+}
+
 type multiLedger struct {
 	chains        map[string]*chainSupport
 	consenters    map[string]Consenter
 	ledgerFactory ordererledger.Factory
 	sysChain      *systemChain
+	signer        crypto.LocalSigner
 }
 
 func getConfigTx(reader ordererledger.Reader) *cb.Envelope {
@@ -91,11 +96,12 @@ func getConfigTx(reader ordererledger.Reader) *cb.Envelope {
 }
 
 // NewManagerImpl produces an instance of a Manager
-func NewManagerImpl(ledgerFactory ordererledger.Factory, consenters map[string]Consenter) Manager {
+func NewManagerImpl(ledgerFactory ordererledger.Factory, consenters map[string]Consenter, signer crypto.LocalSigner) Manager {
 	ml := &multiLedger{
 		chains:        make(map[string]*chainSupport),
 		ledgerFactory: ledgerFactory,
 		consenters:    consenters,
+		signer:        signer,
 	}
 
 	existingChains := ledgerFactory.ChainIDs()
@@ -108,38 +114,36 @@ func NewManagerImpl(ledgerFactory ordererledger.Factory, consenters map[string]C
 		if configTx == nil {
 			logger.Fatalf("Could not find configuration transaction for chain %s", chainID)
 		}
-		configManager, policyManager, backingLedger, sharedConfigManager := ml.newResources(configTx)
-		chainID := configManager.ChainID()
+		ledgerResources := ml.newLedgerResources(configTx)
+		chainID := ledgerResources.ChainID()
 
-		if sharedConfigManager.ChainCreators() != nil {
+		if ledgerResources.SharedConfig().ChainCreationPolicyNames() != nil {
 			if ml.sysChain != nil {
 				logger.Fatalf("There appear to be two system chains %s and %s", ml.sysChain.support.ChainID(), chainID)
 			}
 			logger.Debugf("Starting with system chain: %x", chainID)
-			chain := newChainSupport(createSystemChainFilters(ml, configManager, policyManager, sharedConfigManager),
-				configManager,
-				policyManager,
-				backingLedger,
-				sharedConfigManager,
+			chain := newChainSupport(createSystemChainFilters(ml, ledgerResources),
+				ledgerResources,
 				consenters,
-				&xxxCryptoHelper{})
+				signer)
 			ml.chains[string(chainID)] = chain
 			ml.sysChain = newSystemChain(chain)
 			// We delay starting this chain, as it might try to copy and replace the chains map via newChain before the map is fully built
 			defer chain.start()
 		} else {
 			logger.Debugf("Starting chain: %x", chainID)
-			chain := newChainSupport(createStandardFilters(configManager, policyManager, sharedConfigManager),
-				configManager,
-				policyManager,
-				backingLedger,
-				sharedConfigManager,
+			chain := newChainSupport(createStandardFilters(ledgerResources),
+				ledgerResources,
 				consenters,
-				&xxxCryptoHelper{})
+				signer)
 			ml.chains[string(chainID)] = chain
 			chain.start()
 		}
 
+	}
+
+	if ml.sysChain == nil {
+		logger.Panicf("No system chain found")
 	}
 
 	return ml
@@ -158,44 +162,23 @@ func (ml *multiLedger) GetChain(chainID string) (ChainSupport, bool) {
 	return cs, ok
 }
 
-func newConfigTxManagerAndHandlers(configEnvelope *cb.ConfigurationEnvelope) (configtx.Manager, policies.Manager, sharedconfig.Manager, error) {
-	policyProviderMap := make(map[int32]policies.Provider)
-	for pType := range cb.Policy_PolicyType_name {
-		rtype := cb.Policy_PolicyType(pType)
-		switch rtype {
-		case cb.Policy_UNKNOWN:
-			// Do not register a handler
-		case cb.Policy_SIGNATURE:
-			policyProviderMap[pType] = cauthdsl.NewPolicyProvider(
-				cauthdsl.NewMockDeserializer()) // FIXME: here we should pass in the orderer MSP as soon as it's ready
-		case cb.Policy_MSP:
-			// Add hook for MSP Handler here
-		}
-	}
-	policyManager := policies.NewManagerImpl(policyProviderMap)
+func newConfigResources(configEnvelope *cb.ConfigurationEnvelope) (*configResources, error) {
 	sharedConfigManager := sharedconfig.NewManagerImpl()
-	configHandlerMap := make(map[cb.ConfigurationItem_ConfigurationType]configtx.Handler)
-	for ctype := range cb.ConfigurationItem_ConfigurationType_name {
-		rtype := cb.ConfigurationItem_ConfigurationType(ctype)
-		switch rtype {
-		case cb.ConfigurationItem_Policy:
-			configHandlerMap[rtype] = policyManager
-		case cb.ConfigurationItem_Orderer:
-			configHandlerMap[rtype] = sharedConfigManager
-		default:
-			configHandlerMap[rtype] = configtx.NewBytesHandler()
-		}
-	}
+	initializer := configtx.NewInitializer()
+	initializer.Handlers()[cb.ConfigurationItem_Orderer] = sharedConfigManager
 
-	configManager, err := configtx.NewConfigurationManager(configEnvelope, policyManager, configHandlerMap)
+	configManager, err := configtx.NewManagerImpl(configEnvelope, initializer, nil)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Error unpacking configuration transaction: %s", err)
+		return nil, fmt.Errorf("Error unpacking configuration transaction: %s", err)
 	}
 
-	return configManager, policyManager, sharedConfigManager, nil
+	return &configResources{
+		Manager:      configManager,
+		sharedConfig: sharedConfigManager,
+	}, nil
 }
 
-func (ml *multiLedger) newResources(configTx *cb.Envelope) (configtx.Manager, policies.Manager, ordererledger.ReadWriter, sharedconfig.Manager) {
+func (ml *multiLedger) newLedgerResources(configTx *cb.Envelope) *ledgerResources {
 	payload := &cb.Payload{}
 	err := proto.Unmarshal(configTx.Payload, payload)
 	if err != nil {
@@ -208,20 +191,23 @@ func (ml *multiLedger) newResources(configTx *cb.Envelope) (configtx.Manager, po
 		logger.Fatalf("Error unmarshaling a config transaction to config envelope: %s", err)
 	}
 
-	configManager, policyManager, sharedConfigManager, err := newConfigTxManagerAndHandlers(configEnvelope)
+	configResources, err := newConfigResources(configEnvelope)
 
 	if err != nil {
 		logger.Fatalf("Error creating configtx manager and handlers: %s", err)
 	}
 
-	chainID := configManager.ChainID()
+	chainID := configResources.ChainID()
 
 	ledger, err := ml.ledgerFactory.GetOrCreate(chainID)
 	if err != nil {
 		logger.Fatalf("Error getting ledger for %s", chainID)
 	}
 
-	return configManager, policyManager, ledger, sharedConfigManager
+	return &ledgerResources{
+		configResources: configResources,
+		ledger:          ledger,
+	}
 }
 
 func (ml *multiLedger) systemChain() *systemChain {
@@ -229,8 +215,8 @@ func (ml *multiLedger) systemChain() *systemChain {
 }
 
 func (ml *multiLedger) newChain(configtx *cb.Envelope) {
-	configManager, policyManager, backingLedger, sharedConfig := ml.newResources(configtx)
-	backingLedger.Append(ordererledger.CreateNextBlock(backingLedger, []*cb.Envelope{configtx}))
+	ledgerResources := ml.newLedgerResources(configtx)
+	ledgerResources.ledger.Append(ordererledger.CreateNextBlock(ledgerResources.ledger, []*cb.Envelope{configtx}))
 
 	// Copy the map to allow concurrent reads from broadcast/deliver while the new chainSupport is
 	newChains := make(map[string]*chainSupport)
@@ -238,8 +224,8 @@ func (ml *multiLedger) newChain(configtx *cb.Envelope) {
 		newChains[key] = value
 	}
 
-	cs := newChainSupport(createStandardFilters(configManager, policyManager, sharedConfig), configManager, policyManager, backingLedger, sharedConfig, ml.consenters, &xxxCryptoHelper{})
-	chainID := configManager.ChainID()
+	cs := newChainSupport(createStandardFilters(ledgerResources), ledgerResources, ml.consenters, ml.signer)
+	chainID := ledgerResources.ChainID()
 
 	logger.Debugf("Created and starting new chain %s", chainID)
 

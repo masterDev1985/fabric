@@ -22,31 +22,40 @@ import (
 	"net"
 	"sync"
 
-	"google.golang.org/grpc"
-
-	"github.com/op/go-logging"
-	"github.com/spf13/viper"
-
+	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/committer/txvalidator"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
-	"github.com/hyperledger/fabric/core/peer/msp"
 	"github.com/hyperledger/fabric/gossip/service"
 	"github.com/hyperledger/fabric/msp"
+	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
+	"github.com/hyperledger/fabric/peer/sharedconfig"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
+	"github.com/op/go-logging"
+	"github.com/spf13/viper"
+	"google.golang.org/grpc"
 )
 
 var peerLogger = logging.MustGetLogger("peer")
 
+type chainSupport struct {
+	configtx.Manager
+	sharedconfig.Descriptor
+	ledger ledger.PeerLedger
+}
+
+func (cs *chainSupport) Ledger() ledger.PeerLedger {
+	return cs.ledger
+}
+
 // chain is a local struct to manage objects in a chain
 type chain struct {
+	cs        *chainSupport
 	cb        *common.Block
-	ledger    ledger.PeerLedger
 	committer committer.Committer
-	mspmgr    msp.MSPManager
 }
 
 // chains is a local map of chainID->chainObject
@@ -60,16 +69,16 @@ func MockInitialize() {
 	ledgermgmt.InitializeTestEnv()
 	chains.list = nil
 	chains.list = make(map[string]*chain)
-	deliveryServiceProvider = func(string) error { return nil }
+	chainInitializer = func(string) { return }
 }
 
-var deliveryServiceProvider func(string) error
+var chainInitializer func(string)
 
 // Initialize sets up any chains that the peer has from the persistence. This
 // function should be called at the start up when the ledger and gossip
 // ready
-func Initialize(dsProvider func(string) error) {
-	deliveryServiceProvider = dsProvider
+func Initialize(init func(string)) {
+	chainInitializer = init
 
 	var cb *common.Block
 	var ledger ledger.PeerLedger
@@ -92,23 +101,22 @@ func Initialize(dsProvider func(string) error) {
 		}
 		// Create a chain if we get a valid ledger with config block
 		if err = createChain(cid, ledger, cb); err != nil {
-			peerLogger.Warning("Failed to load chain %s", cid)
+			peerLogger.Warningf("Failed to load chain %s(%s)", cid, err)
 			peerLogger.Debug("Error reloading chain %s with message %s. We continue to the next chain rather than abort.", cid, err)
+			continue
 		}
 
-		// now create the delivery service for this chain
-		if err = deliveryServiceProvider(cid); err != nil {
-			peerLogger.Errorf("Error creating delivery service for %s(err - %s)", cid, err)
-		}
+		InitChain(cid)
 	}
 }
 
-//CreateDeliveryService creates the delivery service for the chainID
-func CreateDeliveryService(chainID string) error {
-	if deliveryServiceProvider == nil {
-		return fmt.Errorf("delivery service provider not available")
+// Take care to initialize chain after peer joined, for example deploys system CCs
+func InitChain(cid string) {
+	if chainInitializer != nil {
+		// Initialize chaincode, namely deploy system CC
+		peerLogger.Debugf("Init chain %s", cid)
+		chainInitializer(cid)
 	}
-	return deliveryServiceProvider(chainID)
 }
 
 func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, error) {
@@ -145,20 +153,57 @@ func getCurrConfigBlockFromLedger(ledger ledger.PeerLedger) (*common.Block, erro
 
 // createChain creates a new chain object and insert it into the chains
 func createChain(cid string, ledger ledger.PeerLedger, cb *common.Block) error {
-	c := committer.NewLedgerCommitter(ledger, txvalidator.NewTxValidator(ledger))
 
-	mgr, err := mspmgmt.GetMSPManagerFromBlock(cid, cb)
+	configEnvelope, err := utils.BreakOutBlockToConfigurationEnvelope(cb)
 	if err != nil {
 		return err
 	}
 
-	if err := service.GetGossipService().JoinChannel(c, cb); err != nil {
+	sharedConfigHandler := sharedconfig.NewDescriptorImpl()
+
+	gossipEventer := service.GetGossipService().NewConfigEventer()
+
+	gossipCallbackWrapper := func(cm configtx.Manager) {
+		gossipEventer.ProcessConfigUpdate(&chainSupport{
+			Manager:    cm,
+			Descriptor: sharedConfigHandler,
+		})
+	}
+
+	configtxInitializer := configtx.NewInitializer()
+	configtxInitializer.Handlers()[common.ConfigurationItem_Peer] = sharedConfigHandler
+	configtxManager, err := configtx.NewManagerImpl(
+		configEnvelope,
+		configtxInitializer,
+		[]func(cm configtx.Manager){gossipCallbackWrapper},
+	)
+	if err != nil {
 		return err
 	}
 
+	// TODO remove once all references to mspmgmt are gone from peer code
+	// MSP is now initialized above in configtx.Manager
+	_, err = mspmgmt.GetMSPManagerFromBlock(cid, cb)
+	if err != nil {
+		return err
+	}
+
+	cs := &chainSupport{
+		Manager:    configtxManager,
+		Descriptor: sharedConfigHandler,
+		ledger:     ledger,
+	}
+
+	c := committer.NewLedgerCommitter(ledger, txvalidator.NewTxValidator(cs))
+	service.GetGossipService().InitializeChannel(cs.ChainID(), c)
+
 	chains.Lock()
 	defer chains.Unlock()
-	chains.list[cid] = &chain{cb: cb, ledger: ledger, mspmgr: mgr, committer: c}
+	chains.list[cid] = &chain{
+		cs:        cs,
+		cb:        cb,
+		committer: c,
+	}
 	return nil
 }
 
@@ -173,6 +218,10 @@ func CreateChainFromBlock(cb *common.Block) error {
 		return err
 	}
 
+	if err := ledger.Commit(cb); err != nil {
+		peerLogger.Errorf("Unable to get genesis block committed into the ledger, chainID %v", cid)
+		return err
+	}
 	return createChain(cid, ledger, cb)
 }
 
@@ -187,7 +236,7 @@ func MockCreateChain(cid string) error {
 
 	chains.Lock()
 	defer chains.Unlock()
-	chains.list[cid] = &chain{ledger: ledger}
+	chains.list[cid] = &chain{cs: &chainSupport{ledger: ledger}}
 
 	return nil
 }
@@ -198,7 +247,18 @@ func GetLedger(cid string) ledger.PeerLedger {
 	chains.RLock()
 	defer chains.RUnlock()
 	if c, ok := chains.list[cid]; ok {
-		return c.ledger
+		return c.cs.ledger
+	}
+	return nil
+}
+
+// GetMSPMgr returns the MSP manager of the chain with chain ID.
+// Note that this call returns nil if chain cid has not been created.
+func GetMSPMgr(cid string) msp.MSPManager {
+	chains.RLock()
+	defer chains.RUnlock()
+	if c, ok := chains.list[cid]; ok {
+		return c.cs.MSPManager()
 	}
 	return nil
 }

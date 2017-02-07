@@ -28,8 +28,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/gossip/channel"
 	"github.com/hyperledger/fabric/gossip/gossip/msgstore"
 	"github.com/hyperledger/fabric/gossip/gossip/pull"
-	"github.com/hyperledger/fabric/gossip/proto"
-	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
+	"github.com/op/go-logging"
 )
 
 type channelState struct {
@@ -101,7 +101,7 @@ func (ga *gossipAdapterImpl) Gossip(msg *proto.GossipMessage) {
 // ValidateStateInfoMessage returns error if a message isn't valid
 // nil otherwise
 func (ga *gossipAdapterImpl) ValidateStateInfoMessage(msg *proto.GossipMessage) error {
-	return ga.gossipServiceImpl.validateStateInfoMsg(msg.GetStateInfo())
+	return ga.gossipServiceImpl.validateStateInfoMsg(msg)
 }
 
 // OrgByPeerIdentity extracts the organization identifier from a peer's identity
@@ -159,7 +159,7 @@ type gossipChannel struct {
 	stateInfoMsgStore         msgstore.MessageStore
 	chainID                   common.ChainID
 	blocksPuller              pull.Mediator
-	logger                    *util.Logger
+	logger                    *logging.Logger
 	stateInfoPublishScheduler *time.Ticker
 	stateInfoRequestScheduler *time.Ticker
 }

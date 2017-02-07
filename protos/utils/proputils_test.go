@@ -26,8 +26,8 @@ import (
 	"os"
 
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/peer/msp"
 	"github.com/hyperledger/fabric/msp"
+	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/protos/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/stretchr/testify/assert"
@@ -38,7 +38,7 @@ func createCIS() *pb.ChaincodeInvocationSpec {
 		ChaincodeSpec: &pb.ChaincodeSpec{
 			Type:        pb.ChaincodeSpec_GOLANG,
 			ChaincodeID: &pb.ChaincodeID{Name: "chaincode_name"},
-			CtorMsg:     &pb.ChaincodeInput{Args: [][]byte{[]byte("arg1"), []byte("arg2")}}}}
+			Input:       &pb.ChaincodeInput{Args: [][]byte{[]byte("arg1"), []byte("arg2")}}}}
 }
 
 func TestProposal(t *testing.T) {
@@ -115,9 +115,9 @@ func TestProposal(t *testing.T) {
 	// sanity check on cis
 	if cis.ChaincodeSpec.Type != pb.ChaincodeSpec_GOLANG ||
 		cis.ChaincodeSpec.ChaincodeID.Name != "chaincode_name" ||
-		len(cis.ChaincodeSpec.CtorMsg.Args) != 2 ||
-		string(cis.ChaincodeSpec.CtorMsg.Args[0]) != "arg1" ||
-		string(cis.ChaincodeSpec.CtorMsg.Args[1]) != "arg2" {
+		len(cis.ChaincodeSpec.Input.Args) != 2 ||
+		string(cis.ChaincodeSpec.Input.Args[0]) != "arg1" ||
+		string(cis.ChaincodeSpec.Input.Args[1]) != "arg2" {
 		t.Fatalf("Invalid chaincode invocation spec after unmarshalling\n")
 		return
 	}
@@ -144,6 +144,7 @@ func TestProposalResponse(t *testing.T) {
 		TxID:        "TxID"}
 
 	pHashBytes := []byte("proposal_hash")
+	pResponse := &pb.Response{Status: 200}
 	results := []byte("results")
 	eventBytes, err := GetBytesChaincodeEvent(events)
 	if err != nil {
@@ -152,7 +153,7 @@ func TestProposalResponse(t *testing.T) {
 	}
 
 	// get the bytes of the ProposalResponsePayload
-	prpBytes, err := GetBytesProposalResponsePayload(pHashBytes, results, eventBytes)
+	prpBytes, err := GetBytesProposalResponsePayload(pHashBytes, pResponse, results, eventBytes)
 	if err != nil {
 		t.Fatalf("Failure while marshalling the ProposalResponsePayload")
 		return
@@ -174,6 +175,18 @@ func TestProposalResponse(t *testing.T) {
 
 	// sanity check on the action
 	if string(act.Results) != "results" {
+		t.Fatalf("Invalid actions after unmarshalling")
+		return
+	}
+
+	event, err := GetChaincodeEvents(act.Events)
+	if err != nil {
+		t.Fatalf("Failure while unmarshalling the ChainCodeEvents")
+		return
+	}
+
+	// sanity check on the event
+	if string(event.ChaincodeID) != "ccid" {
 		t.Fatalf("Invalid actions after unmarshalling")
 		return
 	}
@@ -217,9 +230,10 @@ func TestEnvelope(t *testing.T) {
 		return
 	}
 
-	res := []byte("res")
+	response := &pb.Response{Status: 200, Payload: []byte("payload")}
+	result := []byte("res")
 
-	presp, err := CreateProposalResponse(prop.Header, prop.Payload, res, nil, nil, signer)
+	presp, err := CreateProposalResponse(prop.Header, prop.Payload, response, result, nil, nil, signer)
 	if err != nil {
 		t.Fatalf("Could not create proposal response, err %s\n", err)
 		return
@@ -249,7 +263,16 @@ func TestEnvelope(t *testing.T) {
 		return
 	}
 
-	if bytes.Compare(act2.Results, res) != 0 {
+	if act2.Response.Status != response.Status {
+		t.Fatalf("response staus don't match")
+		return
+	}
+	if bytes.Compare(act2.Response.Payload, response.Payload) != 0 {
+		t.Fatalf("response payload don't match")
+		return
+	}
+
+	if bytes.Compare(act2.Results, result) != 0 {
 		t.Fatalf("results don't match")
 		return
 	}
@@ -296,7 +319,16 @@ func TestEnvelope(t *testing.T) {
 		return
 	}
 
-	if bytes.Compare(ca.Results, res) != 0 {
+	if ca.Response.Status != response.Status {
+		t.Fatalf("response staus don't match")
+		return
+	}
+	if bytes.Compare(ca.Response.Payload, response.Payload) != 0 {
+		t.Fatalf("response payload don't match")
+		return
+	}
+
+	if bytes.Compare(ca.Results, result) != 0 {
 		t.Fatalf("results don't match")
 		return
 	}

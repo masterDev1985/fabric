@@ -23,8 +23,6 @@ import (
 
 	"encoding/pem"
 
-	"encoding/json"
-
 	"bytes"
 
 	"github.com/golang/protobuf/proto"
@@ -146,7 +144,7 @@ func (msp *bccspmsp) Setup(conf1 *m.MSPConfig) error {
 
 	// given that it's an msp of type fabric, extract the MSPConfig instance
 	var conf m.FabricMSPConfig
-	err := json.Unmarshal(conf1.Config, &conf)
+	err := proto.Unmarshal(conf1.Config, &conf)
 	if err != nil {
 		return fmt.Errorf("Failed unmarshalling fabric msp config, err %s", err)
 	}
@@ -270,6 +268,8 @@ func (msp *bccspmsp) DeserializeIdentity(serializedID []byte) (Identity, error) 
 	if err != nil {
 		return nil, fmt.Errorf("Could not deserialize a SerializedIdentity, err %s", err)
 	}
+
+	// TODO: check that sId.Mspid is equal to this msp'id as per contract of the interface.
 
 	// This MSP will always deserialize certs this way
 	bl, _ := pem.Decode(sId.IdBytes)

@@ -19,12 +19,16 @@ package kvledger
 import (
 	"errors"
 
+	"github.com/hyperledger/fabric/common/ledger/blkstorage"
+	"github.com/hyperledger/fabric/common/ledger/blkstorage/fsblkstorage"
+	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb/historyleveldb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/statecouchdb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb/stateleveldb"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-	"github.com/hyperledger/fabric/core/ledger/util/db"
 )
 
 var (
@@ -38,14 +42,34 @@ var (
 
 // Provider implements interface ledger.PeerLedgerProvider
 type Provider struct {
-	idStore     *idStore
-	vdbProvider statedb.VersionedDBProvider
+	idStore            *idStore
+	blockStoreProvider blkstorage.BlockStoreProvider
+	vdbProvider        statedb.VersionedDBProvider
+	historydbProvider  historydb.HistoryDBProvider
 }
 
 // NewProvider instantiates a new Provider.
 // This is not thread-safe and assumed to be synchronized be the caller
 func NewProvider() (ledger.PeerLedgerProvider, error) {
+
 	logger.Info("Initializing ledger provider")
+
+	// Initialize the ID store (inventory of chainIds/ledgerIds)
+	idStore := openIDStore(ledgerconfig.GetLedgerProviderPath())
+
+	// Initialize the block storage
+	attrsToIndex := []blkstorage.IndexableAttr{
+		blkstorage.IndexableAttrBlockHash,
+		blkstorage.IndexableAttrBlockNum,
+		blkstorage.IndexableAttrTxID,
+		blkstorage.IndexableAttrBlockNumTranNum,
+	}
+	indexConfig := &blkstorage.IndexConfig{AttrsToIndex: attrsToIndex}
+	blockStoreProvider := fsblkstorage.NewProvider(
+		fsblkstorage.NewConf(ledgerconfig.GetBlockStorePath(), ledgerconfig.GetMaxBlockfileSize()),
+		indexConfig)
+
+	// Initialize the versioned database (state database)
 	var vdbProvider statedb.VersionedDBProvider
 	if !ledgerconfig.IsCouchDBEnabled() {
 		logger.Debugf("Constructing leveldb VersionedDBProvider")
@@ -58,10 +82,13 @@ func NewProvider() (ledger.PeerLedgerProvider, error) {
 			return nil, err
 		}
 	}
-	ledgerMgmtPath := ledgerconfig.GetLedgerProviderPath()
-	idStore := openIDStore(ledgerMgmtPath)
+
+	// Initialize the history database (index for history of values by key)
+	var historydbProvider historydb.HistoryDBProvider
+	historydbProvider = historyleveldb.NewHistoryDBProvider()
+
 	logger.Info("ledger provider Initialized")
-	return &Provider{idStore, vdbProvider}, nil
+	return &Provider{idStore, blockStoreProvider, vdbProvider, historydbProvider}, nil
 }
 
 // Create implements the corresponding method from interface ledger.PeerLedgerProvider
@@ -74,15 +101,13 @@ func (provider *Provider) Create(ledgerID string) (ledger.PeerLedger, error) {
 		return nil, ErrLedgerIDExists
 	}
 	provider.idStore.createLedgerID(ledgerID)
-	l, err := NewKVLedger(provider.vdbProvider, ledgerID)
-	if err != nil {
-		return nil, err
-	}
-	return l, nil
+	return provider.Open(ledgerID)
 }
 
 // Open implements the corresponding method from interface ledger.PeerLedgerProvider
 func (provider *Provider) Open(ledgerID string) (ledger.PeerLedger, error) {
+
+	// Check the ID store to ensure that the chainId/ledgerId exists
 	exists, err := provider.idStore.ledgerIDExists(ledgerID)
 	if err != nil {
 		return nil, err
@@ -90,7 +115,28 @@ func (provider *Provider) Open(ledgerID string) (ledger.PeerLedger, error) {
 	if !exists {
 		return nil, ErrNonExistingLedgerID
 	}
-	l, err := NewKVLedger(provider.vdbProvider, ledgerID)
+
+	// Get the block store for a chain/ledger
+	blockStore, err := provider.blockStoreProvider.OpenBlockStore(ledgerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the versioned database (state database) for a chain/ledger
+	vDB, err := provider.vdbProvider.GetDBHandle(ledgerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the history database (index for history of values by key) for a chain/ledger
+	historyDB, err := provider.historydbProvider.GetDBHandle(ledgerID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create a kvLedger for this chain/ledger, which encasulates the underlying data stores
+	// (id store, blockstore, state database, history database)
+	l, err := newKVLedger(ledgerID, blockStore, vDB, historyDB)
 	if err != nil {
 		return nil, err
 	}
@@ -109,16 +155,18 @@ func (provider *Provider) List() ([]string, error) {
 
 // Close implements the corresponding method from interface ledger.PeerLedgerProvider
 func (provider *Provider) Close() {
-	provider.vdbProvider.Close()
 	provider.idStore.close()
+	provider.blockStoreProvider.Close()
+	provider.vdbProvider.Close()
+	provider.historydbProvider.Close()
 }
 
 type idStore struct {
-	db *db.DB
+	db *leveldbhelper.DB
 }
 
 func openIDStore(path string) *idStore {
-	db := db.CreateDB(&db.Conf{DBPath: path})
+	db := leveldbhelper.CreateDB(&leveldbhelper.Conf{DBPath: path})
 	db.Open()
 	return &idStore{db}
 }

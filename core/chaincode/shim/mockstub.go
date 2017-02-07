@@ -21,9 +21,11 @@ package shim
 import (
 	"container/list"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/golang/protobuf/ptypes/timestamp"
+	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/op/go-logging"
 )
 
@@ -105,21 +107,21 @@ func (stub *MockStub) MockPeerChaincode(invokableChaincodeName string, otherStub
 }
 
 // Initialise this chaincode,  also starts and ends a transaction.
-func (stub *MockStub) MockInit(uuid string, args [][]byte) ([]byte, error) {
+func (stub *MockStub) MockInit(uuid string, args [][]byte) pb.Response {
 	stub.args = args
 	stub.MockTransactionStart(uuid)
-	bytes, err := stub.cc.Init(stub)
+	res := stub.cc.Init(stub)
 	stub.MockTransactionEnd(uuid)
-	return bytes, err
+	return res
 }
 
 // Invoke this chaincode, also starts and ends a transaction.
-func (stub *MockStub) MockInvoke(uuid string, args [][]byte) ([]byte, error) {
+func (stub *MockStub) MockInvoke(uuid string, args [][]byte) pb.Response {
 	stub.args = args
 	stub.MockTransactionStart(uuid)
-	bytes, err := stub.cc.Invoke(stub)
+	res := stub.cc.Invoke(stub)
 	stub.MockTransactionEnd(uuid)
-	return bytes, err
+	return res
 }
 
 // GetState retrieves the value for a given key from the ledger
@@ -186,8 +188,20 @@ func (stub *MockStub) DelState(key string) error {
 	return nil
 }
 
-func (stub *MockStub) RangeQueryState(startKey, endKey string) (StateRangeQueryIteratorInterface, error) {
+func (stub *MockStub) RangeQueryState(startKey, endKey string) (StateQueryIteratorInterface, error) {
 	return NewMockStateRangeQueryIterator(stub, startKey, endKey), nil
+}
+
+// GetQueryResult function can be invoked by a chaincode to perform a
+// rich query against state database.  Only supported by state database implementations
+// that support rich query.  The query string is in the syntax of the underlying
+// state database. An iterator is returned which can be used to iterate (next) over
+// the query result set
+func (stub *MockStub) GetQueryResult(query string) (StateQueryIteratorInterface, error) {
+	// Not implemented since the mock engine does not have a query engine.
+	// However, a very simple query engine that supports string matching
+	// could be implemented to test that the framework supports queries
+	return nil, errors.New("Not Implemented")
 }
 
 //PartialCompositeKeyQuery function can be invoked by a chaincode to query the
@@ -196,28 +210,38 @@ func (stub *MockStub) RangeQueryState(startKey, endKey string) (StateRangeQueryI
 //matches the given partial composite key. This function should be used only for
 //a partial composite key. For a full composite key, an iter with empty response
 //would be returned.
-func (stub *MockStub) PartialCompositeKeyQuery(objectType string, attributes []string) (StateRangeQueryIteratorInterface, error) {
+func (stub *MockStub) PartialCompositeKeyQuery(objectType string, attributes []string) (StateQueryIteratorInterface, error) {
 	return partialCompositeKeyQuery(stub, objectType, attributes)
 }
 
-//Given a list of attributes, createCompositeKey function combines these attributes
+// CreateCompositeKey combines the list of attributes
 //to form a composite key.
 func (stub *MockStub) CreateCompositeKey(objectType string, attributes []string) (string, error) {
 	return createCompositeKey(stub, objectType, attributes)
 }
 
-// Invokes a peered chaincode.
-// E.g. stub1.InvokeChaincode("stub2Hash", funcArgs)
+// SplitCompositeKey splits the composite key into attributes
+// on which the composite key was formed.
+func (stub *MockStub) SplitCompositeKey(compositeKey string) (string, []string, error) {
+	return splitCompositeKey(stub, compositeKey)
+}
+
+// InvokeChaincode calls a peered chaincode.
+// E.g. stub1.InvokeChaincode("stub2Hash", funcArgs, channel)
 // Before calling this make sure to create another MockStub stub2, call stub2.MockInit(uuid, func, args)
 // and register it with stub1 by calling stub1.MockPeerChaincode("stub2Hash", stub2)
-func (stub *MockStub) InvokeChaincode(chaincodeName string, args [][]byte) ([]byte, error) {
+func (stub *MockStub) InvokeChaincode(chaincodeName string, args [][]byte, channel string) pb.Response {
+	// Internally we use chaincode name as a composite name
+	if channel != "" {
+		chaincodeName = chaincodeName + "/" + channel
+	}
 	// TODO "args" here should possibly be a serialized pb.ChaincodeInput
 	otherStub := stub.Invokables[chaincodeName]
 	mockLogger.Debug("MockStub", stub.Name, "Invoking peer chaincode", otherStub.Name, args)
 	//	function, strings := getFuncArgs(args)
-	bytes, err := otherStub.MockInvoke(stub.TxID, args)
-	mockLogger.Debug("MockStub", stub.Name, "Invoked peer chaincode", otherStub.Name, "got", bytes, err)
-	return bytes, err
+	res := otherStub.MockInvoke(stub.TxID, args)
+	mockLogger.Debug("MockStub", stub.Name, "Invoked peer chaincode", otherStub.Name, "got", fmt.Sprintf("%+v", res))
+	return res
 }
 
 // Not implemented

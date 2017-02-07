@@ -74,8 +74,8 @@ func TestVM_BuildImage_ChaincodeLocal(t *testing.T) {
 	}
 	// Build the spec
 	chaincodePath := "github.com/hyperledger/fabric/examples/chaincode/go/chaincode_example01"
-	spec := &pb.ChaincodeSpec{Type: pb.ChaincodeSpec_GOLANG, ChaincodeID: &pb.ChaincodeID{Name: "ex01", Path: chaincodePath}, CtorMsg: &pb.ChaincodeInput{Args: util.ToChaincodeArgs("f")}}
-	if _, err := vm.BuildChaincodeContainer(spec); err != nil {
+	spec := &pb.ChaincodeSpec{Type: pb.ChaincodeSpec_GOLANG, ChaincodeID: &pb.ChaincodeID{Name: "ex01", Path: chaincodePath}, Input: &pb.ChaincodeInput{Args: util.ToChaincodeArgs("f")}}
+	if err := vm.BuildChaincodeContainer(spec); err != nil {
 		t.Fail()
 		t.Log(err)
 	}
@@ -91,8 +91,8 @@ func TestVM_BuildImage_ChaincodeRemote(t *testing.T) {
 	}
 	// Build the spec
 	chaincodePath := "https://github.com/prjayach/chaincode_examples/chaincode_example02"
-	spec := &pb.ChaincodeSpec{Type: pb.ChaincodeSpec_GOLANG, ChaincodeID: &pb.ChaincodeID{Name: "ex02", Path: chaincodePath}, CtorMsg: &pb.ChaincodeInput{Args: util.ToChaincodeArgs("f")}}
-	if _, err := vm.BuildChaincodeContainer(spec); err != nil {
+	spec := &pb.ChaincodeSpec{Type: pb.ChaincodeSpec_GOLANG, ChaincodeID: &pb.ChaincodeID{Name: "ex02", Path: chaincodePath}, Input: &pb.ChaincodeInput{Args: util.ToChaincodeArgs("f")}}
+	if err := vm.BuildChaincodeContainer(spec); err != nil {
 		t.Fail()
 		t.Log(err)
 	}

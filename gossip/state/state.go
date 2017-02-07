@@ -28,8 +28,9 @@ import (
 	"github.com/hyperledger/fabric/gossip/comm"
 	common2 "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip"
-	"github.com/hyperledger/fabric/gossip/proto"
+	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/protos/common"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/op/go-logging"
 )
 
@@ -46,10 +47,6 @@ type GossipStateProvider interface {
 	// Stop terminates state transfer object
 	Stop()
 }
-
-var logFormat = logging.MustStringFormatter(
-	`%{color}%{level} %{longfunc}():%{color:reset}(%{module})%{message}`,
-)
 
 var remoteStateMsgFilter = func(message interface{}) bool {
 	return message.(comm.ReceivedMessage).GetGossipMessage().IsRemoteStateMessage()
@@ -92,7 +89,7 @@ type GossipStateProviderImpl struct {
 
 // NewGossipStateProvider creates initialized instance of gossip state provider
 func NewGossipStateProvider(chainID string, g gossip.Gossip, committer committer.Committer) GossipStateProvider {
-	logger, _ := logging.GetLogger("GossipStateProvider")
+	logger := util.GetLogger(util.LoggingStateModule, "")
 
 	gossipChan, _ := g.Accept(func(message interface{}) bool {
 		// Get only data messages
@@ -112,13 +109,6 @@ func NewGossipStateProvider(chainID string, g gossip.Gossip, committer committer
 		return nil
 	}
 
-	//if the ledger is empty, we need a block from orderer
-	//so don't expect height+1 but expect 0
-	next := height
-	if height > 0 {
-		next = height + 1
-	}
-
 	s := &GossipStateProviderImpl{
 		chainID: chainID,
 
@@ -133,16 +123,14 @@ func NewGossipStateProvider(chainID string, g gossip.Gossip, committer committer
 
 		stopFlag: 0,
 		// Create a queue for payload received
-		payloads: NewPayloadsBuffer(next),
+		payloads: NewPayloadsBuffer(height),
 
 		committer: committer,
 
 		logger: logger,
 	}
 
-	logging.SetFormatter(logFormat)
-
-	state := NewNodeMetastate(height)
+	state := NewNodeMetastate(height - 1)
 
 	s.logger.Infof("Updating node metadata information, current ledger sequence is at = %d, next expected block is = %d", state.LedgerHeight, s.payloads.Next())
 	bytes, err := state.Bytes()
@@ -338,18 +326,11 @@ func (s *GossipStateProviderImpl) antiEntropy() {
 		}
 
 		if current == max {
-			// No messages in the buffer or there are no gaps
-			//s.logger.Debugf("Current ledger height is the same as ledger height on other peers.")
 			continue
 		}
 
-		if current > 0 {
-			current = current + 1
-		}
-		//s.logger.Debugf("Requesting new blocks in range [%d...%d].", current+1, max)
 		s.requestBlocksInRange(uint64(current), uint64(max))
 	}
-	s.logger.Debug("[XXX]: Stateprovider stopped, stoping anti entropy procedure.")
 	s.done.Done()
 }
 
@@ -413,7 +394,7 @@ func (s *GossipStateProviderImpl) AddPayload(payload *proto.Payload) error {
 }
 
 func (s *GossipStateProviderImpl) commitBlock(block *common.Block, seqNum uint64) error {
-	if err := s.committer.CommitBlock(block); err != nil {
+	if err := s.committer.Commit(block); err != nil {
 		s.logger.Errorf("Got error while committing(%s)\n", err)
 		return err
 	}

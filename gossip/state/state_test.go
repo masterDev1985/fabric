@@ -25,6 +25,7 @@ import (
 	"time"
 
 	pb "github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/configtx/test"
 	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/committer"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
@@ -33,27 +34,28 @@ import (
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip"
-	"github.com/hyperledger/fabric/gossip/proto"
+	gossipUtil "github.com/hyperledger/fabric/gossip/util"
 	pcomm "github.com/hyperledger/fabric/protos/common"
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
 	portPrefix = 5610
-	logger, _  = logging.GetLogger("GossipStateProviderTest")
+	logger     = gossipUtil.GetLogger(gossipUtil.LoggingStateModule, "")
 )
 
-var orgId = []byte("ORG1")
+var orgID = []byte("ORG1")
 var anchorPeerIdentity = api.PeerIdentityType("identityInOrg1")
 
 type joinChanMsg struct {
 }
 
-// GetTimestamp returns the timestamp of the message's creation
-func (*joinChanMsg) GetTimestamp() time.Time {
-	return time.Now()
+// SequenceNumber returns the sequence number of the block that the message
+// is derived from
+func (*joinChanMsg) SequenceNumber() uint64 {
+	return uint64(time.Now().UnixNano())
 }
 
 // AnchorPeers returns all the anchor peers that are in the channel
@@ -67,7 +69,7 @@ type orgCryptoService struct {
 // OrgByPeerIdentity returns the OrgIdentityType
 // of a given peer identity
 func (*orgCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
-	return orgId
+	return orgID
 }
 
 // Verify verifies a JoinChannelMessage, returns nil on success,
@@ -86,7 +88,7 @@ func (*naiveCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) com
 
 // VerifyBlock returns nil if the block is properly signed,
 // else returns error
-func (*naiveCryptoService) VerifyBlock(signedBlock api.SignedBlock) error {
+func (*naiveCryptoService) VerifyBlock(chainID common.ChainID, signedBlock api.SignedBlock) error {
 	return nil
 }
 
@@ -107,6 +109,14 @@ func (*naiveCryptoService) Verify(peerIdentity api.PeerIdentityType, signature, 
 	return nil
 }
 
+// VerifyByChannel checks that signature is a valid signature of message
+// under a peer's verification key, but also in the context of a specific channel.
+// If the verification succeeded, Verify returns nil meaning no error occurred.
+// If peerIdentity is nil, then the signature is verified against this peer's verification key.
+func (*naiveCryptoService) VerifyByChannel(chainID common.ChainID, peerIdentity api.PeerIdentityType, signature, message []byte) error {
+	return nil
+}
+
 func (*naiveCryptoService) ValidateIdentity(peerIdentity api.PeerIdentityType) error {
 	return nil
 }
@@ -114,7 +124,7 @@ func (*naiveCryptoService) ValidateIdentity(peerIdentity api.PeerIdentityType) e
 func bootPeers(ids ...int) []string {
 	peers := []string{}
 	for _, id := range ids {
-		peers = append(peers, fmt.Sprintf("localhost:%d", (id+portPrefix)))
+		peers = append(peers, fmt.Sprintf("localhost:%d", id+portPrefix))
 	}
 	return peers
 }
@@ -163,6 +173,8 @@ func newGossipInstance(config *gossip.Config) gossip.Gossip {
 // Create new instance of KVLedger to be used for testing
 func newCommitter(id int) committer.Committer {
 	ledger, _ := ledgermgmt.CreateLedger(strconv.Itoa(id))
+	cb, _ := test.MakeGenesisBlock(util.GetTestChainID())
+	ledger.Commit(cb)
 	return committer.NewLedgerCommitter(ledger, &validator.MockValidator{})
 }
 
@@ -285,7 +297,7 @@ func TestNewGossipStateProvider_SendingManyMessages(t *testing.T) {
 
 	msgCount := 10
 
-	for i := 0; i < msgCount; i++ {
+	for i := 1; i <= msgCount; i++ {
 		rawblock := pcomm.NewBlock(uint64(i), []byte{})
 		if bytes, err := pb.Marshal(rawblock); err == nil {
 			payload := &proto.Payload{uint64(i), "", bytes}
@@ -325,8 +337,8 @@ func TestNewGossipStateProvider_SendingManyMessages(t *testing.T) {
 		logger.Debug("[*****]: Trying to see all peers get all blocks")
 		for _, p := range peersSet {
 			height, err := p.commit.LedgerHeight()
-			if height != uint64(msgCount) || err != nil {
-				logger.Debug("[XXXXXXX]: Ledger height is at: ", height)
+			if height != uint64(msgCount+1) || err != nil {
+				//logger.Debug("[XXXXXXX]: Ledger height is at: ", height)
 				return false
 			}
 		}

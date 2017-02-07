@@ -36,6 +36,7 @@ logging:
     version:    warning
     protoutils: debug
     error:      warning
+    msp:        warning
 
     format: '%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'
 
@@ -149,7 +150,7 @@ peer:
     fileSystemPath: /var/hyperledger/production
 
     # Path on the file system where peer will find MSP local configurations
-    mspConfigPath: /var/hyperledger/msp
+    mspConfigPath: msp/sampleconfig
 
     # Used with Go profiling tools only in none production environment. In
     # production, it should be disabled (eg enabled: false)
@@ -180,6 +181,10 @@ vm:
                 file: /path/to/ca.pem
             key:
                 file: /path/to/server-key.pem
+
+        # Enables/disables the standard out/err from chaincode containers for debugging purposes
+        attachStdout: false
+
         # Parameters of docker container creating. For docker can created by custom parameters
         # If you have your own ipam & dns-server for cluster you can use them to create container efficient.
         # NetworkMode Sets the networking mode for the container. Supported standard values are: `host`(default),`bridge`,`ipvlan`,`none`
@@ -222,7 +227,6 @@ chaincode:
         # be appended depedendent upon the chaincode specification.
         Dockerfile:  |
           FROM hyperledger/fabric-ccenv:$(ARCH)-$(PROJECT_VERSION)
-          COPY src $GOPATH/src
           WORKDIR $GOPATH
 
     car:
@@ -298,11 +302,8 @@ ledger:
        queryLimit: 1000
 
     # historyDatabase - options are true or false
-    # Indicates if the transaction history should be stored in
-    # a querable database such as "CouchDB".
-    # The stateDatabase must be also stored in CouchDB for
-    # history to be enabled.
-    historyDatabase: false
+    # Indicates if the history of key updates should be stored in goleveldb
+    historyDatabase: true
 
 ###############################################################################
 #

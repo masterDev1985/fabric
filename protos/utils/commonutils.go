@@ -23,8 +23,11 @@ import (
 	"github.com/hyperledger/fabric/core/crypto/primitives"
 	cb "github.com/hyperledger/fabric/protos/common"
 
+	"errors"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/golang/protobuf/ptypes/timestamp"
+	"github.com/hyperledger/fabric/common/crypto"
 )
 
 // MarshalOrPanic serializes a protobuf message and panics if this operation fails.
@@ -100,14 +103,9 @@ func UnmarshalEnvelope(encoded []byte) (*cb.Envelope, error) {
 
 // ExtractEnvelopeOrPanic retrieves the requested envelope from a given block and unmarshals it -- it panics if either of these operation fail.
 func ExtractEnvelopeOrPanic(block *cb.Block, index int) *cb.Envelope {
-	envelopeCount := len(block.Data.Data)
-	if index < 0 || index >= envelopeCount {
-		panic("Envelope index out of bounds")
-	}
-	marshaledEnvelope := block.Data.Data[index]
-	envelope := &cb.Envelope{}
-	if err := proto.Unmarshal(marshaledEnvelope, envelope); err != nil {
-		panic(fmt.Errorf("Block data does not carry an envelope at index %d: %s", index, err))
+	envelope, err := ExtractEnvelope(block, index)
+	if err != nil {
+		panic(err)
 	}
 	return envelope
 }
@@ -128,9 +126,9 @@ func ExtractEnvelope(block *cb.Block, index int) (*cb.Envelope, error) {
 
 // ExtractPayloadOrPanic retrieves the payload of a given envelope and unmarshals it -- it panics if either of these operations fail.
 func ExtractPayloadOrPanic(envelope *cb.Envelope) *cb.Payload {
-	payload := &cb.Payload{}
-	if err := proto.Unmarshal(envelope.Payload, payload); err != nil {
-		panic(fmt.Errorf("Envelope does not carry a Payload: %s", err))
+	payload, err := ExtractPayload(envelope)
+	if err != nil {
+		panic(err)
 	}
 	return payload
 }
@@ -172,4 +170,30 @@ func MakePayloadHeader(ch *cb.ChainHeader, sh *cb.SignatureHeader) *cb.Header {
 		ChainHeader:     ch,
 		SignatureHeader: sh,
 	}
+}
+
+// NewSignatureHeaderOrPanic returns a signature header and panics on error.
+func NewSignatureHeaderOrPanic(signer crypto.LocalSigner) *cb.SignatureHeader {
+	if signer == nil {
+		panic(errors.New("Invalid signer. Must be different from nil."))
+	}
+
+	signatureHeader, err := signer.NewSignatureHeader()
+	if err != nil {
+		panic(fmt.Errorf("Failed generating a new SignatureHeader [%s]", err))
+	}
+	return signatureHeader
+}
+
+// SignOrPanic signs a message and panics on error.
+func SignOrPanic(signer crypto.LocalSigner, msg []byte) []byte {
+	if signer == nil {
+		panic(errors.New("Invalid signer. Must be different from nil."))
+	}
+
+	sigma, err := signer.Sign(msg)
+	if err != nil {
+		panic(fmt.Errorf("Failed generting signature [%s]", err))
+	}
+	return sigma
 }

@@ -32,12 +32,13 @@ import (
 	"github.com/hyperledger/fabric/core"
 	"github.com/hyperledger/fabric/core/chaincode"
 	"github.com/hyperledger/fabric/core/comm"
-	"github.com/hyperledger/fabric/core/deliverservice"
 	"github.com/hyperledger/fabric/core/endorser"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
 	"github.com/hyperledger/fabric/core/peer"
+	"github.com/hyperledger/fabric/core/scc"
 	"github.com/hyperledger/fabric/events/producer"
 	"github.com/hyperledger/fabric/gossip/service"
+	"github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/peer/common"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/spf13/cobra"
@@ -56,7 +57,7 @@ func startCmd() *cobra.Command {
 	flags.BoolVarP(&chaincodeDevMode, "peer-chaincodedev", "", false,
 		"Whether peer in chaincode development mode")
 	flags.BoolVarP(&peerDefaultChain, "peer-defaultchain", "", true,
-		"Whether to start peer with chain **TEST_CHAINID**")
+		"Whether to start peer with chain testchainid")
 
 	return nodeStartCmd
 }
@@ -75,30 +76,8 @@ var nodeStartCmd = &cobra.Command{
 //user to create a single chain and initialize it
 func initChainless() {
 	//deploy the chainless system chaincodes
-	chaincode.DeployChainlessSysCCs()
+	scc.DeployChainlessSysCCs()
 	logger.Infof("Deployed chainless system chaincodess")
-}
-
-//startDeliveryService is used by the peer to start a delivery service
-//when the peer joins a chain
-func startDeliveryService(chainID string) error {
-	// Initialize all system chainodes on this chain
-	// TODO: Fix this code to initialize instead of deploy chaincodes
-	chaincode.DeploySysCCs(chainID)
-
-	commit := peer.GetCommitter(chainID)
-	if commit == nil {
-		return fmt.Errorf("Unable to get committer for [%s]", chainID)
-	}
-
-	var deliverService *deliverclient.DeliverService
-	if deliverService = deliverclient.NewDeliverService(chainID); deliverService == nil {
-		return fmt.Errorf("Unable to created delivery service for [%s]", chainID)
-	}
-
-	deliverService.Start(commit)
-
-	return nil
 }
 
 func serve(args []string) error {
@@ -168,7 +147,13 @@ func serve(args []string) error {
 
 	// Initialize gossip component
 	bootstrap := viper.GetStringSlice("peer.gossip.bootstrap")
-	service.InitGossipService(peerEndpoint.Address, grpcServer, bootstrap...)
+
+	serializedIdentity, err := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
+	if err != nil {
+		panic(fmt.Sprintf("Failed serializing self identity: %v", err))
+	}
+
+	service.InitGossipService(serializedIdentity, peerEndpoint.Address, grpcServer, bootstrap...)
 	defer service.GetGossipService().Stop()
 
 	//initialize the env for chainless startup
@@ -183,22 +168,21 @@ func serve(args []string) error {
 			panic(fmt.Sprintf("Unable to create genesis block for [%s] due to [%s]", chainID, err))
 		}
 
-		//this creates **TEST_CHAINID**  and and sets up gossip
+		//this creates testchainid and sets up gossip
 		if err = peer.CreateChainFromBlock(block); err == nil {
 			fmt.Printf("create chain [%s]", chainID)
-			chaincode.DeploySysCCs(chainID)
+			scc.DeploySysCCs(chainID)
 			logger.Infof("Deployed system chaincodes on %s", chainID)
-
-			if err = startDeliveryService(chainID); err != nil {
-				panic(fmt.Sprintf("%s", err))
-			}
 		} else {
 			fmt.Printf("create default chain [%s] failed with %s", chainID, err)
 		}
 	}
 
-	//this brings up all the chains (including **TEST_CHAINID**)
-	peer.Initialize(startDeliveryService)
+	//this brings up all the chains (including testchainid)
+	peer.Initialize(func(cid string) {
+		logger.Debugf("Deploying system CC, for chain <%s>", cid)
+		scc.DeploySysCCs(cid)
+	})
 
 	logger.Infof("Starting peer with ID=%s, network ID=%s, address=%s",
 		peerEndpoint.ID, viper.GetString("peer.networkId"), peerEndpoint.Address)
@@ -246,10 +230,11 @@ func serve(args []string) error {
 		}()
 	}
 
-	// sets the logging level for the 'error' module to the default value from
-	// core.yaml. it can also be updated dynamically using
-	// "peer logging setlevel error <log-level>"
-	common.SetErrorLoggingLevel()
+	// sets the logging level for the 'error' and 'msp' modules to the
+	// values from core.yaml. they can also be updated dynamically using
+	// "peer logging setlevel <module-name> <log-level>"
+	common.SetLogLevelFromViper("error")
+	common.SetLogLevelFromViper("msp")
 
 	// Block until grpc server exits
 	return <-serve
@@ -260,10 +245,7 @@ func serve(args []string) error {
 //which will be registered only during join phase.
 func registerChaincodeSupport(grpcServer *grpc.Server) {
 	//get user mode
-	userRunsCC := false
-	if viper.GetString("chaincode.mode") == chaincode.DevModeUserRunsChaincode {
-		userRunsCC = true
-	}
+	userRunsCC := chaincode.IsDevMode()
 
 	//get chaincode startup timeout
 	tOut, err := strconv.Atoi(viper.GetString("chaincode.startuptimeout"))
@@ -276,7 +258,7 @@ func registerChaincodeSupport(grpcServer *grpc.Server) {
 	ccSrv := chaincode.NewChaincodeSupport(peer.GetPeerEndpoint, userRunsCC, ccStartupTimeout)
 
 	//Now that chaincode is initialized, register all system chaincodes.
-	chaincode.RegisterSysCCs()
+	scc.RegisterSysCCs()
 
 	pb.RegisterChaincodeSupportServer(grpcServer, ccSrv)
 }

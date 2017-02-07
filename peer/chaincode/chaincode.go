@@ -38,8 +38,6 @@ func AddFlags(cmd *cobra.Command) {
 		fmt.Sprintf("Language the %s is written in", chainFuncName))
 	flags.StringVarP(&chaincodeCtorJSON, "ctor", "c", "{}",
 		fmt.Sprintf("Constructor message for the %s in JSON format", chainFuncName))
-	flags.StringVarP(&chaincodeAttributesJSON, "attributes", "a", "[]",
-		fmt.Sprintf("User attributes for the %s in JSON format", chainFuncName))
 	flags.StringVarP(&chaincodePath, "path", "p", common.UndefinedParamValue,
 		fmt.Sprintf("Path to %s", chainFuncName))
 	flags.StringVarP(&chaincodeName, "name", "n", common.UndefinedParamValue,
@@ -50,6 +48,12 @@ func AddFlags(cmd *cobra.Command) {
 		fmt.Sprint("Name of a custom ID generation algorithm (hashing and decoding) e.g. sha256base64"))
 	flags.StringVarP(&chainID, "chainID", "C", util.GetTestChainID(),
 		fmt.Sprint("The chain on which this command should be executed"))
+	flags.StringVarP(&policy, "policy", "P", common.UndefinedParamValue,
+		fmt.Sprint("The endorsement policy associated to this chaincode"))
+	flags.StringVarP(&escc, "escc", "E", common.UndefinedParamValue,
+		fmt.Sprint("The name of the endorsement system chaincode to be used for this chaincode"))
+	flags.StringVarP(&vscc, "vscc", "V", common.UndefinedParamValue,
+		fmt.Sprint("The name of the verification system chaincode to be used for this chaincode"))
 }
 
 // Cmd returns the cobra command for Chaincode
@@ -60,22 +64,26 @@ func Cmd(cf *ChaincodeCmdFactory) *cobra.Command {
 	chaincodeCmd.AddCommand(invokeCmd(cf))
 	chaincodeCmd.AddCommand(queryCmd(cf))
 	chaincodeCmd.AddCommand(upgradeCmd(cf))
+	chaincodeCmd.AddCommand(packageCmd(cf))
 
 	return chaincodeCmd
 }
 
 // Chaincode-related variables.
 var (
-	chaincodeLang           string
-	chaincodeCtorJSON       string
-	chaincodePath           string
-	chaincodeName           string
-	chaincodeUsr            string
-	chaincodeQueryRaw       bool
-	chaincodeQueryHex       bool
-	chaincodeAttributesJSON string
-	customIDGenAlg          string
-	chainID                 string
+	chaincodeLang     string
+	chaincodeCtorJSON string
+	chaincodePath     string
+	chaincodeName     string
+	chaincodeUsr      string
+	chaincodeQueryRaw bool
+	chaincodeQueryHex bool
+	customIDGenAlg    string
+	chainID           string
+	policy            string
+	escc              string
+	vscc              string
+	policyMarhsalled  []byte
 )
 
 var chaincodeCmd = &cobra.Command{

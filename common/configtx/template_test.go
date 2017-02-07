@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/hyperledger/fabric/common/util"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
@@ -39,21 +40,15 @@ func verifyItemsResult(t *testing.T, template Template, count int) {
 
 	for i, signedItem := range result {
 		item := utils.UnmarshalConfigurationItemOrPanic(signedItem.ConfigurationItem)
-		assert.Equal(t, newChainID, item.Header.ChainID, "Should have appropriately set new chainID")
 		expected := fmt.Sprintf("%d", i)
 		assert.Equal(t, expected, string(item.Value), "Expected %s but got %s", expected, item.Value)
-		assert.Equal(t, int32(cb.HeaderType_CONFIGURATION_ITEM), item.Header.Type)
 	}
 }
 
 func TestSimpleTemplate(t *testing.T) {
-	hdr := &cb.ChainHeader{
-		ChainID: "foo",
-		Type:    int32(cb.HeaderType_CONFIGURATION_ITEM),
-	}
 	simple := NewSimpleTemplate(
-		&cb.ConfigurationItem{Value: []byte("0"), Header: hdr},
-		&cb.ConfigurationItem{Value: []byte("1"), Header: hdr},
+		&cb.ConfigurationItem{Value: []byte("0")},
+		&cb.ConfigurationItem{Value: []byte("1")},
 	)
 	verifyItemsResult(t, simple, 2)
 }
@@ -79,7 +74,7 @@ func TestNewChainTemplate(t *testing.T) {
 	)
 
 	creationPolicy := "Test"
-	nct := NewChainCreationTemplate(creationPolicy, simple)
+	nct := NewChainCreationTemplate(creationPolicy, util.ComputeCryptoHash, simple)
 
 	newChainID := "foo"
 	items, err := nct.Items(newChainID)
@@ -93,9 +88,6 @@ func TestNewChainTemplate(t *testing.T) {
 
 	for i, signedItem := range items {
 		item := utils.UnmarshalConfigurationItemOrPanic(signedItem.ConfigurationItem)
-		if item.Header.ChainID != newChainID {
-			t.Errorf("Should have appropriately set new chainID")
-		}
 		if i == 0 {
 			if item.Key != CreationPolicyKey {
 				t.Errorf("First item should have been the creation policy")

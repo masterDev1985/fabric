@@ -30,8 +30,9 @@ import (
 	"github.com/hyperledger/fabric/gossip/filter"
 	"github.com/hyperledger/fabric/gossip/gossip/msgstore"
 	"github.com/hyperledger/fabric/gossip/gossip/pull"
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
+	"github.com/op/go-logging"
 )
 
 // Config is a configuration item
@@ -119,9 +120,10 @@ type gossipChannel struct {
 	joinMsg                   api.JoinChannelMessage
 	blockMsgStore             msgstore.MessageStore
 	stateInfoMsgStore         msgstore.MessageStore
+	leaderMsgStore            msgstore.MessageStore
 	chainID                   common.ChainID
 	blocksPuller              pull.Mediator
-	logger                    *util.Logger
+	logger                    *logging.Logger
 	stateInfoPublishScheduler *time.Ticker
 	stateInfoRequestScheduler *time.Ticker
 	memFilter                 *membershipFilter
@@ -148,7 +150,7 @@ func NewGossipChannel(mcs api.MessageCryptoService, chainID common.ChainID, adap
 	gc := &gossipChannel{
 		mcs:                       mcs,
 		Adapter:                   adapter,
-		logger:                    util.GetLogger("channelState", adapter.GetConf().ID),
+		logger:                    util.GetLogger(util.LoggingChannelModule, adapter.GetConf().ID),
 		stopChan:                  make(chan struct{}, 1),
 		shouldGossipStateInfo:     int32(0),
 		stateInfoPublishScheduler: time.NewTicker(adapter.GetConf().PublishStateInfoInterval),
@@ -166,6 +168,7 @@ func NewGossipChannel(mcs api.MessageCryptoService, chainID common.ChainID, adap
 
 	gc.stateInfoMsgStore = NewStateInfoMessageStore()
 	gc.blocksPuller = gc.createBlockPuller()
+	gc.leaderMsgStore = msgstore.NewMessageStore(proto.NewGossipMessageComparator(0), func(m interface{}) {})
 
 	gc.ConfigureChannel(joinMsg)
 
@@ -241,7 +244,7 @@ func (gc *gossipChannel) createBlockPuller() pull.Mediator {
 	conf := pull.PullConfig{
 		MsgType:           proto.PullMsgType_BlockMessage,
 		Channel:           []byte(gc.chainID),
-		Id:                gc.GetConf().ID,
+		ID:                gc.GetConf().ID,
 		PeerCountToSelect: gc.GetConf().PullPeerNum,
 		PullInterval:      gc.GetConf().PullInterval,
 		Tag:               proto.GossipMessage_CHAN_AND_ORG,
@@ -329,8 +332,8 @@ func (gc *gossipChannel) ConfigureChannel(joinMsg api.JoinChannelMessage) {
 		gc.joinMsg = joinMsg
 	}
 
-	if gc.joinMsg.GetTimestamp().After(joinMsg.GetTimestamp()) {
-		gc.logger.Warning("Already have a more updated JoinChannel message(", gc.joinMsg.GetTimestamp(), ") than", gc.joinMsg.GetTimestamp())
+	if gc.joinMsg.SequenceNumber() > (joinMsg.SequenceNumber()) {
+		gc.logger.Warning("Already have a more updated JoinChannel message(", gc.joinMsg.SequenceNumber(), ") than", gc.joinMsg.SequenceNumber())
 		return
 	}
 	orgs := []api.OrgIdentityType{}
@@ -419,6 +422,15 @@ func (gc *gossipChannel) HandleMessage(msg comm.ReceivedMessage) {
 		}
 		gc.blocksPuller.HandleMessage(msg)
 	}
+
+	if m.IsLeadershipMsg() {
+		// Handling leadership message
+		added := gc.leaderMsgStore.Add(m)
+		if added {
+			gc.DeMultiplex(m)
+		}
+
+	}
 }
 
 func (gc *gossipChannel) handleStateInfSnapshot(m *proto.GossipMessage, sender common.PKIidType) {
@@ -461,7 +473,7 @@ func (gc *gossipChannel) verifyBlock(msg *proto.GossipMessage, sender common.PKI
 		gc.logger.Warning("Received empty payload from", sender)
 		return false
 	}
-	err := gc.mcs.VerifyBlock(msg.GetDataMsg().Payload)
+	err := gc.mcs.VerifyBlock(msg.Channel, msg.GetDataMsg().Payload)
 	if err != nil {
 		gc.logger.Warning("Received fabricated block from", sender, "in DataUpdate:", err)
 		return false

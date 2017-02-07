@@ -44,10 +44,22 @@ type General struct {
 	MaxWindowSize uint32
 	ListenAddress string
 	ListenPort    uint16
+	TLS           TLS
 	GenesisMethod string
 	GenesisFile   string
 	Profile       Profile
 	LogLevel      string
+	LocalMSPDir   string
+}
+
+//TLS contains config used to configure TLS
+type TLS struct {
+	Enabled           bool
+	PrivateKey        string
+	Certificate       string
+	RootCAs           []string
+	ClientAuthEnabled bool
+	ClientRootCAs     []string
 }
 
 // Genesis contains config which is used by the provisional bootstrapper
@@ -55,6 +67,7 @@ type Genesis struct {
 	OrdererType  string
 	BatchTimeout time.Duration
 	BatchSize    BatchSize
+	SbftShared   SbftShared
 }
 
 // BatchSize contains configuration affecting the size of batches
@@ -87,6 +100,23 @@ type Kafka struct {
 	Retry   Retry
 	Verbose bool
 	Version sarama.KafkaVersion
+	TLS     TLS
+}
+
+// SbftLocal contains config for the SBFT peer/replica
+type SbftLocal struct {
+	PeerCommAddr string
+	CertFile     string
+	KeyFile      string
+	DataDir      string
+}
+
+// SbftShared contains config for the SBFT network
+type SbftShared struct {
+	N                  uint64
+	F                  uint64
+	RequestTimeoutNsec uint64
+	Peers              map[string]string // Address to Cert mapping
 }
 
 // Retry contains config for the reconnection attempts to the Kafka brokers
@@ -106,6 +136,7 @@ type TopLevel struct {
 	FileLedger FileLedger
 	Kafka      Kafka
 	Genesis    Genesis
+	SbftLocal  SbftLocal
 }
 
 var defaults = TopLevel{
@@ -121,7 +152,8 @@ var defaults = TopLevel{
 			Enabled: false,
 			Address: "0.0.0.0:6060",
 		},
-		LogLevel: "INFO",
+		LogLevel:    "INFO",
+		LocalMSPDir: "../msp/sampleconfig/",
 	},
 	RAMLedger: RAMLedger{
 		HistorySize: 10000,
@@ -138,6 +170,9 @@ var defaults = TopLevel{
 		},
 		Verbose: false,
 		Version: sarama.V0_9_0_1,
+		TLS: TLS{
+			Enabled: false,
+		},
 	},
 	Genesis: Genesis{
 		OrdererType:  "solo",
@@ -147,6 +182,18 @@ var defaults = TopLevel{
 			AbsoluteMaxBytes:  100000000,
 			PreferredMaxBytes: 512 * 1024,
 		},
+		SbftShared: SbftShared{
+			N:                  1,
+			F:                  0,
+			RequestTimeoutNsec: uint64(time.Second.Nanoseconds()),
+			Peers:              map[string]string{":6101": "sbft/testdata/cert1.pem"},
+		},
+	},
+	SbftLocal: SbftLocal{
+		PeerCommAddr: ":6101",
+		CertFile:     "sbft/testdata/cert1.pem",
+		KeyFile:      "sbft/testdata/key.pem",
+		DataDir:      "/tmp",
 	},
 }
 
@@ -177,9 +224,21 @@ func (c *TopLevel) completeInitialization() {
 			c.General.GenesisMethod = defaults.General.GenesisMethod
 		case c.General.GenesisFile == "":
 			c.General.GenesisFile = defaults.General.GenesisFile
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.Certificate == "":
+			logger.Panicf("General.Kafka.TLS.Certificate must be set if General.Kafka.TLS.Enabled is set to true.")
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.PrivateKey == "":
+			logger.Panicf("General.Kafka.TLS.PrivateKey must be set if General.Kafka.TLS.Enabled is set to true.")
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.RootCAs == nil:
+			logger.Panicf("General.Kafka.TLS.CertificatePool must be set if General.Kafka.TLS.Enabled is set to true.")
 		case c.General.Profile.Enabled && (c.General.Profile.Address == ""):
 			logger.Infof("Profiling enabled and General.Profile.Address unset, setting to %s", defaults.General.Profile.Address)
 			c.General.Profile.Address = defaults.General.Profile.Address
+		case c.General.LocalMSPDir == "":
+			logger.Infof("General.LocalMSPDir unset, setting to %s", defaults.General.LocalMSPDir)
+			// Note, this is a bit of a weird one, the orderer may set the ORDERER_CFG_PATH after
+			// the file is initialized, so we cannot initialize this in the structure, so we
+			// deference the env portion here
+			c.General.LocalMSPDir = filepath.Join(os.Getenv("ORDERER_CFG_PATH"), defaults.General.LocalMSPDir)
 		case c.FileLedger.Prefix == "":
 			logger.Infof("FileLedger.Prefix unset, setting to %s", defaults.FileLedger.Prefix)
 			c.FileLedger.Prefix = defaults.FileLedger.Prefix
@@ -221,22 +280,26 @@ func Load() *TopLevel {
 	config := viper.New()
 
 	config.SetConfigName("orderer")
-	alternativeCfgPath := os.Getenv("ORDERER_CFG_PATH")
-	if alternativeCfgPath != "" {
-		logger.Infof("User defined config file path: %s", alternativeCfgPath)
-		config.AddConfigPath(alternativeCfgPath) // Path to look for the config file in
-	} else {
-		config.AddConfigPath("./")
-		config.AddConfigPath("../../.")
-		config.AddConfigPath("../orderer/")
-		config.AddConfigPath("../../orderer/")
+	cfgPath := os.Getenv("ORDERER_CFG_PATH")
+	if cfgPath == "" {
+		logger.Infof("No orderer cfg path set, assuming development environment, deriving from go path")
 		// Path to look for the config file in based on GOPATH
 		gopath := os.Getenv("GOPATH")
 		for _, p := range filepath.SplitList(gopath) {
 			ordererPath := filepath.Join(p, "src/github.com/hyperledger/fabric/orderer/")
-			config.AddConfigPath(ordererPath)
+			if _, err := os.Stat(filepath.Join(ordererPath, "orderer.yaml")); err != nil {
+				// The yaml file does not exist in this component of the go src
+				continue
+			}
+			cfgPath = ordererPath
 		}
+		if cfgPath == "" {
+			logger.Fatalf("Could not find orderer.yaml, try setting ORDERER_CFG_PATH or GOPATH correctly")
+		}
+		logger.Infof("Setting ORDERER_CFG_PATH to: %s", cfgPath)
+		os.Setenv("ORDERER_CFG_PATH", cfgPath)
 	}
+	config.AddConfigPath(cfgPath) // Path to look for the config file in
 
 	// for environment variables
 	config.SetEnvPrefix(Prefix)

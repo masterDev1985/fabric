@@ -8,55 +8,39 @@ theme_dir: 'docs/custom_theme'
 
 pages:
 - Home: index.md
+- Why Hyperledger Fabric?: whyfabric.md
+- Fabric overview: overview.md
+#- Fabric capabilities: capabilities.md
+#- Fabric architecture: architecture.md
+- Getting started: gettingstarted.md
+#- Chaincode and sample program: chaincode.md
 - Glossary: glossary.md
-- Protocol Spec: protocol-spec.md
-- Usecases: biz/usecases.md
-- System Chaincode: SystemChaincode-noop.md
-
-- Installation and Setup:
-  - Chaincode or Application Developer Setup: Setup/Chaincode-setup.md
-  - Java Chaincode Setup: Setup/JAVAChaincode.md
-  - Fabric Network Setup: Setup/Network-setup.md
-  - NodeSDK Setup: Setup/NodeSDK-setup.md
-  - CA Setup: Setup/ca-setup.md
-  - TLS Setup: Setup/TLSSetup.md
-  - Logging: Setup/logging-control.md
-
-- API's:
-  - Chaincode APIs: API/ChaincodeAPI.md
-  - Command Line Interface: API/CLI.md
+- Releases: releases.md
 
 - Fabric Developer:
   - v1.0 Preview: abstract_v1.md
-  - Navigating Jira: jira_navigation.md
   - Contributing: CONTRIBUTING.md
   - Maintainers: MAINTAINERS.md
+  - Getting an Account: Gerrit/lf-account.md
+  - Navigating Jira: jira_navigation.md
   - Fabric Developer Setup: dev-setup/devenv.md
   - Building Fabric: dev-setup/build.md
-  - Getting an Account: Gerrit/lf-account.md
   - Gerrit: Gerrit/gerrit.md
-  - Reviewing: Gerrit/reviewing.md
   - Changes: Gerrit/changes.md
+  - Reviewing: Gerrit/reviewing.md
   - Best Practices: Gerrit/best-practices.md
-  - Go Style Guides:
+  - Canonical Use Cases: biz/usecases.md
+  - Style Guides:
     - Golang: Style-guides/go-style.md
 
-- FAQ's:
-  - ChainCodeFAQ: FAQ/chaincode_FAQ.md
-  - ConfidentialityFAQ: FAQ/confidentiality_FAQ.md
-  - ConsensusFAQ: FAQ/consensus_FAQ.md
-  - Identity ManagementFAQ: FAQ/identity_management_FAQ.md
-  - UsageFAQ: FAQ/usage_FAQ.md
+- Application Developer:
+  - CLI: API/CLI.md
+  - Writing, Building, and Running Chaincode: Setup/Chaincode-setup.md
+  - Chaincode FAQ: FAQ/chaincode_FAQ.md
 
-- Tech:
-  - Application ACL: tech/application-ACL.md
-  - Attributes: tech/attributes.md
-  - Best Practices: tech/best-practices.md
-
-- Starter Kit:
-  - Starter Kit: starter/fabric-starter-kit.md
-
-- Releases: releases.md
+- Setup:
+  - Fabric CA: Setup/ca-setup.md
+  - Logging Control: Setup/logging-control.md
 
 markdown_extensions:
   - toc:
@@ -71,4 +55,4 @@ markdown_extensions:
       enable_dollar_delimiter: True #for use of inline $..$
   - footnotes
 
-copyright: Copyright &copy; 2016 IBM Corp. <br></br>Contributed to the Hyperledger Project under the <a href="https://github.com/hyperledger/fabric/blob/master/LICENSE" target="_blank">Apache Software License 2.0</a>
+copyright: Copyright &copy; 2017 IBM Corp. <br></br>Contributed to the Hyperledger Project under the <a href="https://github.com/hyperledger/fabric/blob/master/LICENSE" target="_blank">Apache Software License 2.0</a>

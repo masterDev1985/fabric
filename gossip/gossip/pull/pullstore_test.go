@@ -26,8 +26,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
 	"github.com/hyperledger/fabric/gossip/gossip/algo"
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -114,7 +114,7 @@ func createPullInstance(endpoint string, peer2PullInst map[string]*pullInstance)
 	conf := PullConfig{
 		MsgType:           proto.PullMsgType_BlockMessage,
 		Channel:           []byte(""),
-		Id:                endpoint,
+		ID:                endpoint,
 		PeerCountToSelect: 3,
 		PullInterval:      pullInterval,
 		Tag:               proto.GossipMessage_EMPTY,
