@@ -18,8 +18,8 @@ package comm
 
 import (
 	"github.com/cactus/go-statsd-client/statsd"
-	"github.com/hyperledger/fabric/vendor/google.golang.org/grpc"
 	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 // UnaryMetricsInterceptor intercepts Unary traffic and sends statsd metrics.
