@@ -1,11 +1,10 @@
 version: '2'
 services:
   zookeeper:
-    # Offical Apache ZooKeeper image. See https://hub.docker.com/_/zookeeper/
-    image: zookeeper:3.4.9
+    image: hyperledger/fabric-zookeeper
 
   orderer:
-    build: ./orderer
+    image: hyperledger/fabric-testenv-orderer
     environment:
       - ORDERER_GENERAL_QUEUESIZE=1000
       - ORDERER_GENERAL_LISTENADDRESS=0.0.0.0
@@ -17,7 +16,7 @@ services:
       - kafka
 
   kafka:
-    build: ../kafka
+    image: hyperledger/fabric-kafka
     environment:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
     depends_on:

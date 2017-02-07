@@ -29,24 +29,24 @@ import (
 )
 
 // New creates a Kafka-backed consenter. Called by orderer's main.go.
-func New(kv sarama.KafkaVersion, ro config.Retry) multichain.Consenter {
-	return newConsenter(kv, ro, bfValue, pfValue, cfValue)
+func New(kv sarama.KafkaVersion, ro config.Retry, tls config.TLS) multichain.Consenter {
+	return newConsenter(kv, ro, tls, bfValue, pfValue, cfValue)
 }
 
 // New calls here because we need to pass additional arguments to
 // the constructor and New() should only read from the config file.
-func newConsenter(kv sarama.KafkaVersion, ro config.Retry, bf bfType, pf pfType, cf cfType) multichain.Consenter {
-	return &consenterImpl{kv, ro, bf, pf, cf}
+func newConsenter(kv sarama.KafkaVersion, ro config.Retry, tls config.TLS, bf bfType, pf pfType, cf cfType) multichain.Consenter {
+	return &consenterImpl{kv, ro, tls, bf, pf, cf}
 }
 
 // bfType defines the signature of the broker constructor.
 type bfType func([]string, ChainPartition) (Broker, error)
 
 // pfType defines the signature of the producer constructor.
-type pfType func([]string, sarama.KafkaVersion, config.Retry) Producer
+type pfType func([]string, sarama.KafkaVersion, config.Retry, config.TLS) Producer
 
 // cfType defines the signature of the consumer constructor.
-type cfType func([]string, sarama.KafkaVersion, ChainPartition, int64) (Consumer, error)
+type cfType func([]string, sarama.KafkaVersion, config.TLS, ChainPartition, int64) (Consumer, error)
 
 // bfValue holds the value for the broker constructor that's used in the non-test case.
 var bfValue = func(brokers []string, cp ChainPartition) (Broker, error) {
@@ -54,13 +54,13 @@ var bfValue = func(brokers []string, cp ChainPartition) (Broker, error) {
 }
 
 // pfValue holds the value for the producer constructor that's used in the non-test case.
-var pfValue = func(brokers []string, kafkaVersion sarama.KafkaVersion, retryOptions config.Retry) Producer {
-	return newProducer(brokers, kafkaVersion, retryOptions)
+var pfValue = func(brokers []string, kafkaVersion sarama.KafkaVersion, retryOptions config.Retry, tls config.TLS) Producer {
+	return newProducer(brokers, kafkaVersion, retryOptions, tls)
 }
 
 // cfValue holds the value for the consumer constructor that's used in the non-test case.
-var cfValue = func(brokers []string, kafkaVersion sarama.KafkaVersion, cp ChainPartition, offset int64) (Consumer, error) {
-	return newConsumer(brokers, kafkaVersion, cp, offset)
+var cfValue = func(brokers []string, kafkaVersion sarama.KafkaVersion, tls config.TLS, cp ChainPartition, offset int64) (Consumer, error) {
+	return newConsumer(brokers, kafkaVersion, tls, cp, offset)
 }
 
 // consenterImpl holds the implementation of type that satisfies the
@@ -68,18 +68,31 @@ var cfValue = func(brokers []string, kafkaVersion sarama.KafkaVersion, cp ChainP
 // is needed because that is what the HandleChain contract requires.
 // The latter is needed for testing.
 type consenterImpl struct {
-	kv sarama.KafkaVersion
-	ro config.Retry
-	bf bfType
-	pf pfType
-	cf cfType
+	kv  sarama.KafkaVersion
+	ro  config.Retry
+	tls config.TLS
+	bf  bfType
+	pf  pfType
+	cf  cfType
 }
 
 // HandleChain creates/returns a reference to a Chain for the given set of support resources.
 // Implements the multichain.Consenter interface. Called by multichain.newChainSupport(), which
 // is itself called by multichain.NewManagerImpl() when ranging over the ledgerFactory's existingChains.
-func (co *consenterImpl) HandleChain(cs multichain.ConsenterSupport) (multichain.Chain, error) {
-	return newChain(co, cs), nil
+func (co *consenterImpl) HandleChain(cs multichain.ConsenterSupport, metadata *cb.Metadata) (multichain.Chain, error) {
+	return newChain(co, cs, getLastOffsetPersisted(metadata)), nil
+}
+
+func getLastOffsetPersisted(metadata *cb.Metadata) int64 {
+	if metadata.Value != nil {
+		// Extract orderer-related metadata from the tip of the ledger first
+		kafkaMetadata := &ab.KafkaMetadata{}
+		if err := proto.Unmarshal(metadata.Value, kafkaMetadata); err != nil {
+			panic("Ledger may be corrupted: cannot unmarshal orderer metadata in most recent block")
+		}
+		return kafkaMetadata.LastOffsetPersisted
+	}
+	return (sarama.OffsetOldest - 1) // default
 }
 
 // When testing we need to inject our own broker/producer/consumer.
@@ -90,18 +103,19 @@ func (co *consenterImpl) HandleChain(cs multichain.ConsenterSupport) (multichain
 // definition of an interface (see testableConsenter below) that will
 // be satisfied by both the actual and the mock object and will allow
 // us to retrieve these constructors.
-func newChain(consenter testableConsenter, support multichain.ConsenterSupport) *chainImpl {
+func newChain(consenter testableConsenter, support multichain.ConsenterSupport, lastOffsetPersisted int64) *chainImpl {
+	logger.Debug("Starting chain with last persisted offset:", lastOffsetPersisted)
 	return &chainImpl{
-		consenter:     consenter,
-		support:       support,
-		partition:     newChainPartition(support.ChainID(), rawPartition),
-		batchTimeout:  support.SharedConfig().BatchTimeout(),
-		lastProcessed: sarama.OffsetOldest - 1, // TODO This should be retrieved by ConsenterSupport; also see note in loop() below
-		producer:      consenter.prodFunc()(support.SharedConfig().KafkaBrokers(), consenter.kafkaVersion(), consenter.retryOptions()),
-		halted:        false, // Redundant as the default value for booleans is false but added for readability
-		exitChan:      make(chan struct{}),
-		haltedChan:    make(chan struct{}),
-		setupChan:     make(chan struct{}),
+		consenter:           consenter,
+		support:             support,
+		partition:           newChainPartition(support.ChainID(), rawPartition),
+		batchTimeout:        support.SharedConfig().BatchTimeout(),
+		lastOffsetPersisted: lastOffsetPersisted,
+		producer:            consenter.prodFunc()(support.SharedConfig().KafkaBrokers(), consenter.kafkaVersion(), consenter.retryOptions(), consenter.tlsConfig()),
+		halted:              false, // Redundant as the default value for booleans is false but added for readability
+		exitChan:            make(chan struct{}),
+		haltedChan:          make(chan struct{}),
+		setupChan:           make(chan struct{}),
 	}
 }
 
@@ -110,6 +124,7 @@ func newChain(consenter testableConsenter, support multichain.ConsenterSupport) 
 type testableConsenter interface {
 	kafkaVersion() sarama.KafkaVersion
 	retryOptions() config.Retry
+	tlsConfig() config.TLS
 	brokFunc() bfType
 	prodFunc() pfType
 	consFunc() cfType
@@ -117,6 +132,7 @@ type testableConsenter interface {
 
 func (co *consenterImpl) kafkaVersion() sarama.KafkaVersion { return co.kv }
 func (co *consenterImpl) retryOptions() config.Retry        { return co.ro }
+func (co *consenterImpl) tlsConfig() config.TLS             { return co.tls }
 func (co *consenterImpl) brokFunc() bfType                  { return co.bf }
 func (co *consenterImpl) prodFunc() pfType                  { return co.pf }
 func (co *consenterImpl) consFunc() cfType                  { return co.cf }
@@ -125,10 +141,10 @@ type chainImpl struct {
 	consenter testableConsenter
 	support   multichain.ConsenterSupport
 
-	partition     ChainPartition
-	batchTimeout  time.Duration
-	lastProcessed int64
-	lastCutBlock  uint64
+	partition           ChainPartition
+	batchTimeout        time.Duration
+	lastOffsetPersisted int64
+	lastCutBlock        uint64
 
 	producer Producer
 	consumer Consumer
@@ -156,9 +172,7 @@ func (ch *chainImpl) Start() {
 	}
 
 	// 2. Set up the listener/consumer for this partition.
-	// TODO When restart support gets added to the common components level, start
-	// the consumer from lastProcessed. For now, hard-code to oldest available.
-	consumer, err := ch.consenter.consFunc()(ch.support.SharedConfig().KafkaBrokers(), ch.consenter.kafkaVersion(), ch.partition, ch.lastProcessed+1)
+	consumer, err := ch.consenter.consFunc()(ch.support.SharedConfig().KafkaBrokers(), ch.consenter.kafkaVersion(), ch.consenter.tlsConfig(), ch.partition, ch.lastOffsetPersisted+1)
 	if err != nil {
 		logger.Criticalf("Cannot retrieve required offset from Kafka cluster for chain %s: %s", ch.partition, err)
 		close(ch.exitChan)
@@ -206,6 +220,7 @@ func (ch *chainImpl) loop() {
 	msg := new(ab.KafkaMessage)
 	var timer <-chan time.Time
 	var ttcNumber uint64
+	var encodedLastOffsetPersisted []byte
 
 	defer close(ch.haltedChan)
 	defer ch.producer.Close()
@@ -237,7 +252,8 @@ func (ch *chainImpl) loop() {
 						return
 					}
 					block := ch.support.CreateNextBlock(batch)
-					ch.support.WriteBlock(block, committers)
+					encodedLastOffsetPersisted = utils.MarshalOrPanic(&ab.KafkaMetadata{LastOffsetPersisted: in.Offset})
+					ch.support.WriteBlock(block, committers, encodedLastOffsetPersisted)
 					ch.lastCutBlock++
 					logger.Debug("Proper time-to-cut received, just cut block", ch.lastCutBlock)
 					continue
@@ -264,7 +280,8 @@ func (ch *chainImpl) loop() {
 				// If !ok, batches == nil, so this will be skipped
 				for i, batch := range batches {
 					block := ch.support.CreateNextBlock(batch)
-					ch.support.WriteBlock(block, committers[i])
+					encodedLastOffsetPersisted = utils.MarshalOrPanic(&ab.KafkaMetadata{LastOffsetPersisted: in.Offset})
+					ch.support.WriteBlock(block, committers[i], encodedLastOffsetPersisted)
 					ch.lastCutBlock++
 					logger.Debug("Batch filled, just cut block", ch.lastCutBlock)
 				}

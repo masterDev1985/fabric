@@ -20,25 +20,36 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/cauthdsl"
 	coreUtil "github.com/hyperledger/fabric/common/util"
+	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/validation"
 	"github.com/hyperledger/fabric/core/ledger"
 	ledgerUtil "github.com/hyperledger/fabric/core/ledger/util"
-	"github.com/hyperledger/fabric/core/peer/msp"
 	"github.com/hyperledger/fabric/msp"
+
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/op/go-logging"
-	"github.com/syndtr/goleveldb/leveldb/errors"
 )
+
+// Support provides all of the needed to evaluate the VSCC
+type Support interface {
+	// Ledger returns the ledger associated with this validator
+	Ledger() ledger.PeerLedger
+
+	// MSPManager returns the MSP manager for this chain
+	MSPManager() msp.MSPManager
+
+	// Apply attempts to apply a configtx to become the new configuration
+	Apply(configtx *common.ConfigurationEnvelope) error
+}
 
 //Validator interface which defines API to validate block transactions
 // and return the bit array mask indicating invalid transactions which
 // didn't pass validation.
 type Validator interface {
-	Validate(block *common.Block)
+	Validate(block *common.Block) error
 }
 
 // private interface to decouple tx validator
@@ -51,7 +62,7 @@ type vsccValidator interface {
 // vsccValidator implementation which used to call
 // vscc chaincode and validate block transactions
 type vsccValidatorImpl struct {
-	ledger     ledger.PeerLedger
+	support    Support
 	ccprovider ccprovider.ChaincodeProvider
 }
 
@@ -59,8 +70,8 @@ type vsccValidatorImpl struct {
 // reference to the ledger to enable tx simulation
 // and execution of vscc
 type txValidator struct {
-	ledger ledger.PeerLedger
-	vscc   vsccValidator
+	support Support
+	vscc    vsccValidator
 }
 
 var logger *logging.Logger // package-level logger
@@ -71,9 +82,9 @@ func init() {
 }
 
 // NewTxValidator creates new transactions validator
-func NewTxValidator(ledger ledger.PeerLedger) Validator {
+func NewTxValidator(support Support) Validator {
 	// Encapsulates interface implementation
-	return &txValidator{ledger, &vsccValidatorImpl{ledger: ledger, ccprovider: ccprovider.GetChaincodeProvider()}}
+	return &txValidator{support, &vsccValidatorImpl{support: support, ccprovider: ccprovider.GetChaincodeProvider()}}
 }
 
 func (v *txValidator) chainExists(chain string) bool {
@@ -81,7 +92,7 @@ func (v *txValidator) chainExists(chain string) bool {
 	return true
 }
 
-func (v *txValidator) Validate(block *common.Block) {
+func (v *txValidator) Validate(block *common.Block) error {
 	logger.Debug("START Block Validation")
 	defer logger.Debug("END Block Validation")
 	txsfltr := ledgerUtil.NewFilterBitArray(uint(len(block.Data.Data)))
@@ -117,7 +128,7 @@ func (v *txValidator) Validate(block *common.Block) {
 				if common.HeaderType(payload.Header.ChainHeader.Type) == common.HeaderType_ENDORSER_TRANSACTION {
 					// Check duplicate transactions
 					txID := payload.Header.ChainHeader.TxID
-					if _, err := v.ledger.GetTransactionByID(txID); err == nil {
+					if _, err := v.support.Ledger().GetTransactionByID(txID); err == nil {
 						logger.Warning("Duplicate transaction found, ", txID, ", skipping")
 						continue
 					}
@@ -130,13 +141,19 @@ func (v *txValidator) Validate(block *common.Block) {
 						continue
 					}
 				} else if common.HeaderType(payload.Header.ChainHeader.Type) == common.HeaderType_CONFIGURATION_TRANSACTION {
-					// TODO: here we should call CSCC and pass it the config tx
-					// note that there is quite a bit more validation necessary
-					// on this tx, namely, validation that each config item has
-					// signature matching the policy required for the item from
-					// the existing configuration; this is taken care of nicely
-					// by configtx.Manager (see fabric/common/configtx).
-					logger.Debug("config transaction received for chain %s", chain)
+					configEnvelope, err := utils.UnmarshalConfigurationEnvelope(payload.Data)
+					if err != nil {
+						err := fmt.Errorf("Error unmarshaling configuration which passed initial validity checks: %s", err)
+						logger.Critical(err)
+						return err
+					}
+
+					if err := v.support.Apply(configEnvelope); err != nil {
+						err := fmt.Errorf("Error validating configuration which passed initial validity checks: %s", err)
+						logger.Critical(err)
+						return err
+					}
+					logger.Debugf("config transaction received for chain %s", chain)
 				}
 
 				if _, err := proto.Marshal(env); err != nil {
@@ -155,42 +172,8 @@ func (v *txValidator) Validate(block *common.Block) {
 	utils.InitBlockMetadata(block)
 	// Serialize invalid transaction bit array into block metadata field
 	block.Metadata.Metadata[common.BlockMetadataIndex_TRANSACTIONS_FILTER] = txsfltr.ToBytes()
-}
 
-// getHardcodedPolicy returns a policy that requests
-// one valid signature from the first MSP in this
-// chain's MSP manager
-// FIXME: this needs to be removed as soon as we extract the policy from LCCC
-func getHardcodedPolicy(chainID string) ([]byte, error) {
-	// 1) determine the MSP identifier for the first MSP in this chain
-	var msp msp.MSP
-	mspMgr := mspmgmt.GetManagerForChain(chainID)
-	msps, err := mspMgr.GetMSPs()
-	if err != nil {
-		return nil, fmt.Errorf("Could not retrieve the MSPs for the chain manager, err %s", err)
-	}
-	if len(msps) == 0 {
-		return nil, errors.New("At least one MSP was expected")
-	}
-	for _, m := range msps {
-		msp = m
-		break
-	}
-	mspid, err := msp.GetIdentifier()
-	if err != nil {
-		return nil, fmt.Errorf("Failure getting the msp identifier, err %s", err)
-	}
-
-	// 2) get the policy
-	p := cauthdsl.SignedByMspMember(mspid)
-
-	// 3) marshal it and return it
-	b, err := proto.Marshal(p)
-	if err != nil {
-		return nil, fmt.Errorf("Could not marshal policy, err %s", err)
-	}
-
-	return b, err
+	return nil
 }
 
 func (v *vsccValidatorImpl) VSCCValidateTx(payload *common.Payload, envBytes []byte) error {
@@ -211,22 +194,7 @@ func (v *vsccValidatorImpl) VSCCValidateTx(payload *common.Payload, envBytes []b
 		return err
 	}
 
-	// TODO: temporary workaround until the policy is specified
-	// by the deployer and can be retrieved via LCCC: we create
-	// a policy that requests 1 valid signature from this chain's
-	// MSP
-	policy, err := getHardcodedPolicy(chainID)
-	if err != nil {
-		return err
-	}
-
-	// build arguments for VSCC invocation
-	// args[0] - function name (not used now)
-	// args[1] - serialized Envelope
-	// args[2] - serialized policy
-	args := [][]byte{[]byte(""), envBytes, policy}
-
-	ctxt, err := v.ccprovider.GetContext(v.ledger)
+	ctxt, err := v.ccprovider.GetContext(v.support.Ledger())
 	if err != nil {
 		logger.Errorf("Cannot obtain context for txid=%s, err %s", txid, err)
 		return err
@@ -239,32 +207,46 @@ func (v *vsccValidatorImpl) VSCCValidateTx(payload *common.Payload, envBytes []b
 		return err
 	}
 
-	// TODO: Temporary solution until FAB-1422 get resolved
-	// Explanation: we actually deploying chaincode transaction,
-	// hence no lccc yet to query for the data, therefore currently
-	// introducing a workaround to skip obtaining LCCC data.
-	vscc := "vscc"
-	if hdrExt.ChaincodeID.Name != "lccc" {
-		// Extracting vscc from lccc
-		// TODO: extract policy as well when available; it's the second argument returned by GetCCValidationInfoFromLCCC
-		vscc, _, err = v.ccprovider.GetCCValidationInfoFromLCCC(ctxt, txid, nil, chainID, hdrExt.ChaincodeID.Name)
-		if err != nil {
-			logger.Errorf("Unable to get chaincode data from LCCC for txid %s, due to %s", txid, err)
-			return err
-		}
+	// LCCC should not undergo standard VSCC type of
+	// validation. It should instead go through system
+	// policy validation to determine whether the issuer
+	// is entitled to deploy a chaincode on our chain
+	// VSCCValidateTx should
+	if hdrExt.ChaincodeID.Name == "lccc" {
+		// TODO: until FAB-1934 is in, we need to stop here
+		logger.Infof("Invocation of LCCC detected, no further VSCC validation necessary")
+		return nil
 	}
 
+	// obtain name of the VSCC and the policy from LCCC
+	vscc, policy, err := v.ccprovider.GetCCValidationInfoFromLCCC(ctxt, txid, nil, chainID, hdrExt.ChaincodeID.Name)
+	if err != nil {
+		logger.Errorf("Unable to get chaincode data from LCCC for txid %s, due to %s", txid, err)
+		return err
+	}
+
+	// build arguments for VSCC invocation
+	// args[0] - function name (not used now)
+	// args[1] - serialized Envelope
+	// args[2] - serialized policy
+	args := [][]byte{[]byte(""), envBytes, policy}
+
 	vscctxid := coreUtil.GenerateUUID()
+
 	// Get chaincode version
 	version := coreUtil.GetSysCCVersion()
 	cccid := v.ccprovider.GetCCContext(chainID, vscc, version, vscctxid, true, nil)
 
 	// invoke VSCC
 	logger.Info("Invoking VSCC txid", txid, "chaindID", chainID)
-	_, _, err = v.ccprovider.ExecuteChaincode(ctxt, cccid, args)
+	res, _, err := v.ccprovider.ExecuteChaincode(ctxt, cccid, args)
 	if err != nil {
-		logger.Errorf("VSCC check failed for transaction txid=%s, error %s", txid, err)
+		logger.Errorf("Invoke VSCC failed for transaction txid=%s, error %s", txid, err)
 		return err
+	}
+	if res.Status != shim.OK {
+		logger.Errorf("VSCC check failed for transaction txid=%s, error %s", txid, res.Message)
+		return fmt.Errorf("%s", res.Message)
 	}
 
 	return nil

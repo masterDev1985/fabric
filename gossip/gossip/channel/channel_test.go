@@ -29,7 +29,7 @@ import (
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
 	"github.com/hyperledger/fabric/gossip/gossip/algo"
-	"github.com/hyperledger/fabric/gossip/proto"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -68,12 +68,14 @@ type joinChanMsg struct {
 	anchorPeers func() []api.AnchorPeer
 }
 
-// GetTimestamp returns the timestamp of the message's creation
-func (jcm *joinChanMsg) GetTimestamp() time.Time {
+// SequenceNumber returns the sequence number of the block
+// this joinChanMsg was derived from.
+// I use timestamps here just for the test.
+func (jcm *joinChanMsg) SequenceNumber() uint64 {
 	if jcm.getTS != nil {
-		return jcm.getTS()
+		return uint64(jcm.getTS().UnixNano())
 	}
-	return time.Now()
+	return uint64(time.Now().UnixNano())
 }
 
 // AnchorPeers returns all the anchor peers that are in the channel
@@ -92,7 +94,11 @@ func (cs *cryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) commo
 	panic("Should not be called in this test")
 }
 
-func (cs *cryptoService) VerifyBlock(signedBlock api.SignedBlock) error {
+func (cs *cryptoService) VerifyByChannel(_ common.ChainID, _ api.PeerIdentityType, _, _ []byte) error {
+	panic("Should not be called in this test")
+}
+
+func (cs *cryptoService) VerifyBlock(chainID common.ChainID, signedBlock api.SignedBlock) error {
 	args := cs.Called(signedBlock)
 	if args.Get(0) == nil {
 		return nil

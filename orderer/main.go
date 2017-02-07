@@ -26,6 +26,7 @@ import (
 	"os"
 
 	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/orderer/common/bootstrap/file"
 	"github.com/hyperledger/fabric/orderer/common/bootstrap/provisional"
 	"github.com/hyperledger/fabric/orderer/kafka"
@@ -34,19 +35,26 @@ import (
 	ramledger "github.com/hyperledger/fabric/orderer/ledger/ram"
 	"github.com/hyperledger/fabric/orderer/localconfig"
 	"github.com/hyperledger/fabric/orderer/multichain"
+	"github.com/hyperledger/fabric/orderer/sbft"
+	"github.com/hyperledger/fabric/orderer/sbft/backend"
+	sbftcrypto "github.com/hyperledger/fabric/orderer/sbft/crypto"
+	"github.com/hyperledger/fabric/orderer/sbft/simplebft"
 	"github.com/hyperledger/fabric/orderer/solo"
 	cb "github.com/hyperledger/fabric/protos/common"
 	ab "github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
 
 	"github.com/Shopify/sarama"
+	"github.com/hyperledger/fabric/common/localmsp"
+	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	logging "github.com/op/go-logging"
-	"google.golang.org/grpc"
 )
 
 var logger = logging.MustGetLogger("orderer/main")
 
 func main() {
+	// Temporarilly set logging level until config is read
+	logging.SetLevel(logging.INFO, "")
 	conf := config.Load()
 	flogging.InitFromSpec(conf.General.LogLevel)
 
@@ -59,12 +67,26 @@ func main() {
 		}()
 	}
 
-	grpcServer := grpc.NewServer()
-
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", conf.General.ListenAddress, conf.General.ListenPort))
 	if err != nil {
 		fmt.Println("Failed to listen:", err)
 		return
+	}
+
+	//Create GRPC server - return if an error occurs
+	secureConfig := comm.SecureServerConfig{
+		UseTLS: conf.General.TLS.Enabled,
+	}
+	grpcServer, err := comm.NewGRPCServerFromListener(lis, secureConfig)
+	if err != nil {
+		fmt.Println("Failed to return new GRPC server: ", err)
+		return
+	}
+
+	// Load local MSP
+	err = mspmgmt.LoadLocalMsp(conf.General.LocalMSPDir)
+	if err != nil { // Handle errors reading the config file
+		panic(fmt.Errorf("Failed initializing crypto [%s]", err))
 	}
 
 	var lf ordererledger.Factory
@@ -125,9 +147,10 @@ func main() {
 
 	consenters := make(map[string]multichain.Consenter)
 	consenters["solo"] = solo.New()
-	consenters["kafka"] = kafka.New(conf.Kafka.Version, conf.Kafka.Retry)
+	consenters["kafka"] = kafka.New(conf.Kafka.Version, conf.Kafka.Retry, conf.Kafka.TLS)
+	consenters["sbft"] = sbft.New(makeSbftConsensusConfig(conf), makeSbftStackConfig(conf))
 
-	manager := multichain.NewManagerImpl(lf, consenters)
+	manager := multichain.NewManagerImpl(lf, consenters, localmsp.NewSigner())
 
 	server := NewServer(
 		manager,
@@ -135,6 +158,26 @@ func main() {
 		int(conf.General.MaxWindowSize),
 	)
 
-	ab.RegisterAtomicBroadcastServer(grpcServer, server)
-	grpcServer.Serve(lis)
+	ab.RegisterAtomicBroadcastServer(grpcServer.Server(), server)
+	logger.Infof("Beginning to serve requests")
+	grpcServer.Start()
+}
+
+func makeSbftConsensusConfig(conf *config.TopLevel) *sbft.ConsensusConfig {
+	cfg := simplebft.Config{N: conf.Genesis.SbftShared.N, F: conf.Genesis.SbftShared.F,
+		BatchDurationNsec:  uint64(conf.Genesis.BatchTimeout),
+		BatchSizeBytes:     uint64(conf.Genesis.BatchSize.AbsoluteMaxBytes),
+		RequestTimeoutNsec: conf.Genesis.SbftShared.RequestTimeoutNsec}
+	peers := make(map[string][]byte)
+	for addr, cert := range conf.Genesis.SbftShared.Peers {
+		peers[addr], _ = sbftcrypto.ParseCertPEM(cert)
+	}
+	return &sbft.ConsensusConfig{Consensus: &cfg, Peers: peers}
+}
+
+func makeSbftStackConfig(conf *config.TopLevel) *backend.StackConfig {
+	return &backend.StackConfig{ListenAddr: conf.SbftLocal.PeerCommAddr,
+		CertFile: conf.SbftLocal.CertFile,
+		KeyFile:  conf.SbftLocal.KeyFile,
+		DataDir:  conf.SbftLocal.DataDir}
 }

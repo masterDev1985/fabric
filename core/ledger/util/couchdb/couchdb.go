@@ -382,7 +382,7 @@ func (dbclient *CouchDatabase) SaveDoc(id string, rev string, bytesDoc []byte, a
 	} else { // there are attachments
 
 		//attachments are included, create the multipart definition
-		multipartData, multipartBoundary, err3 := createAttachmentPart(*data, attachments, defaultBoundary)
+		multipartData, multipartBoundary, err3 := createAttachmentPart(bytesDoc, attachments, defaultBoundary)
 		if err3 != nil {
 			return "", err3
 		}
@@ -414,10 +414,13 @@ func (dbclient *CouchDatabase) SaveDoc(id string, rev string, bytesDoc []byte, a
 
 }
 
-func createAttachmentPart(data bytes.Buffer, attachments []Attachment, defaultBoundary string) (bytes.Buffer, string, error) {
+func createAttachmentPart(data []byte, attachments []Attachment, defaultBoundary string) (bytes.Buffer, string, error) {
+
+	//Create a buffer for writing the result
+	writeBuffer := new(bytes.Buffer)
 
 	// read the attachment and save as an attachment
-	writer := multipart.NewWriter(&data)
+	writer := multipart.NewWriter(writeBuffer)
 
 	//retrieve the boundary for the multipart
 	defaultBoundary = writer.Boundary()
@@ -431,6 +434,21 @@ func createAttachmentPart(data bytes.Buffer, attachments []Attachment, defaultBo
 	attachmentJSONMap := map[string]interface{}{
 		"_attachments": fileAttachments}
 
+	//Add any data uploaded with the files
+	if data != nil {
+
+		//create a generic map
+		genericMap := make(map[string]interface{})
+		//unmarshal the data into the generic map
+		json.Unmarshal(data, &genericMap)
+
+		//add all key/values to the attachmentJSONMap
+		for jsonKey, jsonValue := range genericMap {
+			attachmentJSONMap[jsonKey] = jsonValue
+		}
+
+	}
+
 	filesForUpload, _ := json.Marshal(attachmentJSONMap)
 	logger.Debugf(string(filesForUpload))
 
@@ -440,7 +458,7 @@ func createAttachmentPart(data bytes.Buffer, attachments []Attachment, defaultBo
 
 	part, err := writer.CreatePart(header)
 	if err != nil {
-		return data, defaultBoundary, err
+		return *writeBuffer, defaultBoundary, err
 	}
 
 	part.Write(filesForUpload)
@@ -450,7 +468,7 @@ func createAttachmentPart(data bytes.Buffer, attachments []Attachment, defaultBo
 		header := make(textproto.MIMEHeader)
 		part, err2 := writer.CreatePart(header)
 		if err2 != nil {
-			return data, defaultBoundary, err2
+			return *writeBuffer, defaultBoundary, err2
 		}
 		part.Write(attachment.AttachmentBytes)
 
@@ -458,10 +476,10 @@ func createAttachmentPart(data bytes.Buffer, attachments []Attachment, defaultBo
 
 	err = writer.Close()
 	if err != nil {
-		return data, defaultBoundary, err
+		return *writeBuffer, defaultBoundary, err
 	}
 
-	return data, defaultBoundary, nil
+	return *writeBuffer, defaultBoundary, nil
 
 }
 
@@ -627,15 +645,25 @@ func (dbclient *CouchDatabase) ReadDocRange(startKey, endKey string, limit, skip
 	//Append the startKey if provided
 	if startKey != "" {
 		startKey = strconv.QuoteToGraphic(startKey)
-		startKey = strings.Replace(startKey, "\\x00", "\\u0000", 1)
+		startKey = strings.Replace(startKey, "\\x00", "\\u0000", -1)
+		startKey = strings.Replace(startKey, "\\x1e", "\\u001e", -1)
+		startKey = strings.Replace(startKey, "\\x1f", "\\u001f", -1)
+		startKey = strings.Replace(startKey, "\\xff", "\\u00ff", -1)
+		//TODO add general unicode support instead of special cases
+
 		queryParms.Add("startkey", startKey)
 	}
 
 	//Append the endKey if provided
 	if endKey != "" {
 		endKey = strconv.QuoteToGraphic(endKey)
-		endKey = strings.Replace(endKey, "\\x00", "\\u0000", 1)
-		endKey = strings.Replace(endKey, "\\x01", "\\u0001", 1) //TODO add general unicode support instead of special cases
+		endKey = strings.Replace(endKey, "\\x00", "\\u0000", -1)
+		endKey = strings.Replace(endKey, "\\x01", "\\u0001", -1)
+		endKey = strings.Replace(endKey, "\\x1e", "\\u001e", -1)
+		endKey = strings.Replace(endKey, "\\x1f", "\\u001f", -1)
+		endKey = strings.Replace(endKey, "\\xff", "\\u00ff", -1)
+		//TODO add general unicode support instead of special cases
+
 		queryParms.Add("endkey", endKey)
 	}
 

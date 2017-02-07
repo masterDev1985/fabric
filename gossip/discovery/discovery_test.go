@@ -26,8 +26,7 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/gossip/common"
-	"github.com/hyperledger/fabric/gossip/proto"
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -63,11 +62,11 @@ type gossipInstance struct {
 	shouldGossip bool
 }
 
-func (comm *dummyCommModule) ValidateAliveMsg(am *proto.AliveMessage) bool {
+func (comm *dummyCommModule) ValidateAliveMsg(am *proto.GossipMessage) bool {
 	return true
 }
 
-func (comm *dummyCommModule) SignMessage(am *proto.AliveMessage) *proto.AliveMessage {
+func (comm *dummyCommModule) SignMessage(am *proto.GossipMessage) *proto.GossipMessage {
 	return am
 }
 
@@ -245,7 +244,6 @@ func createDiscoveryInstanceThatGossips(port int, id string, bootstrapPeers []st
 	s := grpc.NewServer()
 
 	discSvc := NewDiscoveryService(bootstrapPeers, self, comm, comm)
-	discSvc.(*gossipDiscoveryImpl).logger.SetLevel(logging.WARNING)
 	gossInst := &gossipInstance{comm: comm, gRGCserv: s, Discovery: discSvc, lsnr: ll, shouldGossip: shouldGossip}
 
 	proto.RegisterGossipServer(s, gossInst)
@@ -256,6 +254,28 @@ func createDiscoveryInstanceThatGossips(port int, id string, bootstrapPeers []st
 
 func bootPeer(port int) string {
 	return fmt.Sprintf("localhost:%d", port)
+}
+
+func TestConnect(t *testing.T) {
+	t.Parallel()
+	nodeNum := 10
+	instances := []*gossipInstance{}
+	for i := 0; i < nodeNum; i++ {
+		inst := createDiscoveryInstance(7611+i, fmt.Sprintf("d%d", i), []string{})
+		instances = append(instances, inst)
+		j := (i + 1) % 10
+		endpoint := fmt.Sprintf("localhost:%d", 7611+j)
+		netMember2Connect2 := NetworkMember{Endpoint: endpoint, PKIid: []byte(endpoint)}
+		inst.Connect(netMember2Connect2)
+		// Check passing nil PKI-ID doesn't crash peer
+		inst.Connect(NetworkMember{PKIid: nil, Endpoint: endpoint})
+	}
+
+	fullMembership := func() bool {
+		return nodeNum-1 == len(instances[nodeNum-1].GetMembership())
+	}
+	waitUntilOrFail(t, fullMembership)
+	stopInstances(t, instances)
 }
 
 func TestUpdate(t *testing.T) {

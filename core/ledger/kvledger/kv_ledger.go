@@ -20,10 +20,10 @@ import (
 	"errors"
 	"fmt"
 
+	commonledger "github.com/hyperledger/fabric/common/ledger"
+	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/core/ledger"
-	"github.com/hyperledger/fabric/core/ledger/blkstorage"
-	"github.com/hyperledger/fabric/core/ledger/blkstorage/fsblkstorage"
-	"github.com/hyperledger/fabric/core/ledger/history"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/history/historydb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/txmgr/lockbasedtxmgr"
@@ -32,58 +32,32 @@ import (
 	logging "github.com/op/go-logging"
 
 	"github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
 var logger = logging.MustGetLogger("kvledger")
 
 // KVLedger provides an implementation of `ledger.PeerLedger`.
 // This implementation provides a key-value based data model
-type KVLedger struct {
-	ledgerID    string
-	blockStore  blkstorage.BlockStore
-	txtmgmt     txmgr.TxMgr
-	historymgmt history.HistMgr
+type kvLedger struct {
+	ledgerID   string
+	blockStore blkstorage.BlockStore
+	txtmgmt    txmgr.TxMgr
+	historyDB  historydb.HistoryDB
 }
 
 // NewKVLedger constructs new `KVLedger`
-func NewKVLedger(versionedDBProvider statedb.VersionedDBProvider, ledgerID string) (*KVLedger, error) {
+func newKVLedger(ledgerID string, blockStore blkstorage.BlockStore,
+	versionedDB statedb.VersionedDB, historyDB historydb.HistoryDB) (*kvLedger, error) {
+
 	logger.Debugf("Creating KVLedger ledgerID=%s: ", ledgerID)
-	attrsToIndex := []blkstorage.IndexableAttr{
-		blkstorage.IndexableAttrBlockHash,
-		blkstorage.IndexableAttrBlockNum,
-		blkstorage.IndexableAttrTxID,
-		blkstorage.IndexableAttrBlockNumTranNum,
-	}
-	indexConfig := &blkstorage.IndexConfig{AttrsToIndex: attrsToIndex}
 
-	blockStorageDir := ledgerconfig.GetBlockStoragePath(ledgerID)
-	blockStorageConf := fsblkstorage.NewConf(blockStorageDir, ledgerconfig.GetMaxBlockfileSize())
-	blockStore := fsblkstorage.NewFsBlockStore(blockStorageConf, indexConfig)
-
-	//State and History database managers
+	//Initialize transaction manager using state database
 	var txmgmt txmgr.TxMgr
-	var historymgmt history.HistMgr
+	txmgmt = lockbasedtxmgr.NewLockBasedTxMgr(versionedDB)
 
-	db, err := versionedDBProvider.GetDBHandle(ledgerID)
-	if err != nil {
-		return nil, err
-	}
-	txmgmt = lockbasedtxmgr.NewLockBasedTxMgr(db)
-
-	if ledgerconfig.IsHistoryDBEnabled() == true {
-		logger.Debugf("===HISTORYDB=== NewKVLedger() Using CouchDB for transaction history database")
-
-		couchDBDef := ledgerconfig.GetCouchDBDefinition()
-
-		historymgmt = history.NewCouchDBHistMgr(
-			couchDBDef.URL,      //couchDB connection URL
-			"system_history",    //couchDB db name matches ledger name, TODO for now use system_history ledger, eventually allow passing in subledger name
-			couchDBDef.Username, //enter couchDB id here
-			couchDBDef.Password) //enter couchDB pw here
-	}
-
-	l := &KVLedger{ledgerID, blockStore, txmgmt, historymgmt}
+	// Create a kvLedger for this chain/ledger, which encasulates the underlying
+	// id store, blockstore, txmgr (state database), history database
+	l := &kvLedger{ledgerID, blockStore, txmgmt, historyDB}
 
 	//Recover both state DB and history DB if they are out of sync with block storage
 	if err := recoverDB(l); err != nil {
@@ -95,7 +69,7 @@ func NewKVLedger(versionedDBProvider statedb.VersionedDBProvider, ledgerID strin
 
 //Recover the state database and history database (if exist)
 //by recommitting last valid blocks
-func recoverDB(l *KVLedger) error {
+func recoverDB(l *kvLedger) error {
 	//If there is no block in blockstorage, nothing to recover.
 	info, _ := l.blockStore.GetBlockchainInfo()
 	if info.Height == 0 {
@@ -120,7 +94,7 @@ func recoverDB(l *KVLedger) error {
 
 	if ledgerconfig.IsHistoryDBEnabled() == true {
 		//Getting savepointValue stored in the history DB
-		if historyDBSavepoint, err = l.historymgmt.GetBlockNumFromSavepoint(); err != nil {
+		if historyDBSavepoint, err = l.historyDB.GetBlockNumFromSavepoint(); err != nil {
 			return err
 		}
 		//Check whether the history DB is in sync with block storage
@@ -197,7 +171,7 @@ func isRecoveryNeeded(savepoint uint64, blockHeight uint64) (bool, error) {
 
 //recommitLostBlocks retrieves blocks in specified range and commit the write set to either
 //state DB or history DB or both
-func recommitLostBlocks(l *KVLedger, savepoint uint64, blockHeight uint64, recoverStateDB bool, recoverHistoryDB bool) error {
+func recommitLostBlocks(l *kvLedger, savepoint uint64, blockHeight uint64, recoverStateDB bool, recoverHistoryDB bool) error {
 	//Compute updateSet for each missing savepoint and commit to state DB
 	var err error
 	var block *common.Block
@@ -216,7 +190,7 @@ func recommitLostBlocks(l *KVLedger, savepoint uint64, blockHeight uint64, recov
 			}
 		}
 		if ledgerconfig.IsHistoryDBEnabled() == true && recoverHistoryDB == true {
-			if err = l.historymgmt.Commit(block); err != nil {
+			if err = l.historyDB.Commit(block); err != nil {
 				return err
 			}
 		}
@@ -226,18 +200,18 @@ func recommitLostBlocks(l *KVLedger, savepoint uint64, blockHeight uint64, recov
 }
 
 // GetTransactionByID retrieves a transaction by id
-func (l *KVLedger) GetTransactionByID(txID string) (*pb.Transaction, error) {
+func (l *kvLedger) GetTransactionByID(txID string) (*common.Envelope, error) {
 	return l.blockStore.RetrieveTxByID(txID)
 }
 
 // GetBlockchainInfo returns basic info about blockchain
-func (l *KVLedger) GetBlockchainInfo() (*pb.BlockchainInfo, error) {
+func (l *kvLedger) GetBlockchainInfo() (*common.BlockchainInfo, error) {
 	return l.blockStore.GetBlockchainInfo()
 }
 
 // GetBlockByNumber returns block at a given height
 // blockNumber of  math.MaxUint64 will return last block
-func (l *KVLedger) GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
+func (l *kvLedger) GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
 	return l.blockStore.RetrieveBlockByNumber(blockNumber)
 
 }
@@ -245,42 +219,42 @@ func (l *KVLedger) GetBlockByNumber(blockNumber uint64) (*common.Block, error) {
 // GetBlocksIterator returns an iterator that starts from `startBlockNumber`(inclusive).
 // The iterator is a blocking iterator i.e., it blocks till the next block gets available in the ledger
 // ResultsIterator contains type BlockHolder
-func (l *KVLedger) GetBlocksIterator(startBlockNumber uint64) (ledger.ResultsIterator, error) {
+func (l *kvLedger) GetBlocksIterator(startBlockNumber uint64) (commonledger.ResultsIterator, error) {
 	return l.blockStore.RetrieveBlocks(startBlockNumber)
 
 }
 
 // GetBlockByHash returns a block given it's hash
-func (l *KVLedger) GetBlockByHash(blockHash []byte) (*common.Block, error) {
+func (l *kvLedger) GetBlockByHash(blockHash []byte) (*common.Block, error) {
 	return l.blockStore.RetrieveBlockByHash(blockHash)
 }
 
 //Prune prunes the blocks/transactions that satisfy the given policy
-func (l *KVLedger) Prune(policy ledger.PrunePolicy) error {
+func (l *kvLedger) Prune(policy commonledger.PrunePolicy) error {
 	return errors.New("Not yet implemented")
 }
 
 // NewTxSimulator returns new `ledger.TxSimulator`
-func (l *KVLedger) NewTxSimulator() (ledger.TxSimulator, error) {
+func (l *kvLedger) NewTxSimulator() (ledger.TxSimulator, error) {
 	return l.txtmgmt.NewTxSimulator()
 }
 
 // NewQueryExecutor gives handle to a query executor.
 // A client can obtain more than one 'QueryExecutor's for parallel execution.
 // Any synchronization should be performed at the implementation level if required
-func (l *KVLedger) NewQueryExecutor() (ledger.QueryExecutor, error) {
+func (l *kvLedger) NewQueryExecutor() (ledger.QueryExecutor, error) {
 	return l.txtmgmt.NewQueryExecutor()
 }
 
 // NewHistoryQueryExecutor gives handle to a history query executor.
 // A client can obtain more than one 'HistoryQueryExecutor's for parallel execution.
 // Any synchronization should be performed at the implementation level if required
-func (l *KVLedger) NewHistoryQueryExecutor() (ledger.HistoryQueryExecutor, error) {
-	return l.historymgmt.NewHistoryQueryExecutor()
+func (l *kvLedger) NewHistoryQueryExecutor() (ledger.HistoryQueryExecutor, error) {
+	return l.historyDB.NewHistoryQueryExecutor()
 }
 
 // Commit commits the valid block (returned in the method RemoveInvalidTransactionsAndPrepare) and related state changes
-func (l *KVLedger) Commit(block *common.Block) error {
+func (l *kvLedger) Commit(block *common.Block) error {
 	var err error
 
 	logger.Debugf("Validating block")
@@ -294,19 +268,16 @@ func (l *KVLedger) Commit(block *common.Block) error {
 		return err
 	}
 
-	logger.Debugf("Committing block to state database")
+	logger.Debugf("Committing block transactions to state database")
 	if err = l.txtmgmt.Commit(); err != nil {
 		panic(fmt.Errorf(`Error during commit to txmgr:%s`, err))
 	}
 
-	//TODO There are still some decisions to be made regarding how consistent history
-	//needs to stay with the state.  At min will want this to run async with state db writes.
-	//(History needs to wait for the block (FSBlock) to write but not the state db)
-	logger.Debugf("===HISTORYDB=== Commit() will write to history if enabled else will be by-passed if not enabled: vledgerconfig.IsHistoryDBEnabled(): %v\n", ledgerconfig.IsHistoryDBEnabled())
+	// History database could be written in parallel with state and/or async as a future optimization
 	if ledgerconfig.IsHistoryDBEnabled() == true {
-		logger.Debugf("Committing transactions to history database")
-		if err := l.historymgmt.Commit(block); err != nil {
-			panic(fmt.Errorf(`Error during commit to txthistory:%s`, err))
+		logger.Debugf("Committing block transactions to history database")
+		if err := l.historyDB.Commit(block); err != nil {
+			panic(fmt.Errorf(`Error during commit to history db:%s`, err))
 		}
 	}
 
@@ -314,7 +285,7 @@ func (l *KVLedger) Commit(block *common.Block) error {
 }
 
 // Close closes `KVLedger`
-func (l *KVLedger) Close() {
+func (l *kvLedger) Close() {
 	l.blockStore.Shutdown()
 	l.txtmgmt.Shutdown()
 }

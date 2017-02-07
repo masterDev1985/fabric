@@ -76,47 +76,8 @@ func TestBreakOutPayloadDataToConfigurationEnvelope(t *testing.T) {
 	}
 } // TestBreakOutPayloadDataToConfigurationEnvelope
 
-func TestBreakOutConfigEnvelopeToConfigItemsPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("TestBreakOutConfigEnvelopeToConfigItemsPanic should have panicked")
-		}
-	}()
-	_, _ = BreakOutConfigEnvelopeToConfigItemsOrPanic(nil)
-} // TestBreakOutConfigEnvelopeToConfigItemsPanic
-
-func TestBreakOutConfigEnvelopeToConfigItemsBadData(t *testing.T) {
-	_, _, err := BreakOutConfigEnvelopeToConfigItems(nil)
-	if err == nil {
-		t.Errorf("TestBreakOutConfigEnvelopeToConfigItemsBadData not handling nil input\n")
-	}
-} // TestBreakOutConfigEnvelopeToConfigItemsBadData
-
-func TestBreakOutConfigEnvelopeToConfigItems(t *testing.T) {
-	configEnv := testConfigurationEnvelope()
-	configItems, _, _ := BreakOutConfigEnvelopeToConfigItems(configEnv) // TODO: test signatures
-	if len(configItems) != 1 {
-		t.Errorf("TestBreakOutPayloadDataToConfigurationEnvelope did not return array of 1 config item\n")
-	}
-	if configItems[0].Header.Type != int32(pb.HeaderType_CONFIGURATION_TRANSACTION) || configItems[0].Header.ChainID != "test" {
-		t.Errorf("TestBreakOutConfigEnvelopeToConfigItems, configItem header does not match original %+v . Expected config_transaction and chainid 'test'\n", configItems[0].Header)
-	}
-	if configItems[0].Type != pb.ConfigurationItem_Orderer || configItems[0].Key != "abc" || !bytes.Equal(configItems[0].Value, []byte("test")) {
-		t.Errorf("TestBreakOutConfigEnvelopeToConfigItems configItem type,Key,Value do not match original %+v\n. Expected orderer, 'abc', 'test'", configItems[0])
-	}
-} // TestBreakOutConfigEnvelopeToConfigItems
-
-func TestBreakOutBlockToConfigurationEnvelopePanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Errorf("TestBreakOutBlockToConfigurationEnvelopePanic should have panicked")
-		}
-	}()
-	_, _ = BreakOutBlockToConfigurationEnvelopeOrPanic(nil)
-} // TestBreakOutBlockToConfigurationEnvelopePanic
-
 func TestBreakOutBlockToConfigurationEnvelopeBadData(t *testing.T) {
-	_, _, err := BreakOutBlockToConfigurationEnvelope(nil)
+	_, err := BreakOutBlockToConfigurationEnvelope(nil)
 	if err == nil {
 		t.Errorf("TestBreakOutBlockToConfigurationEnvelopeBadData should have rejected null input\n")
 	}
@@ -124,7 +85,7 @@ func TestBreakOutBlockToConfigurationEnvelopeBadData(t *testing.T) {
 
 func TestBreakOutBlockToConfigurationEnvelope(t *testing.T) {
 	block := testConfigurationBlock()
-	configEnvelope, _, _ := BreakOutBlockToConfigurationEnvelope(block) // TODO: test envelope signature
+	configEnvelope, _ := BreakOutBlockToConfigurationEnvelope(block) // TODO: test envelope signature
 	if len(configEnvelope.Items) != 1 {
 		t.Errorf("TestBreakOutBlockToConfigurationEnvelope should have an array of 1 signedConfigurationItems\n")
 	}
@@ -150,31 +111,6 @@ func testPayloadHeader() *pb.Header {
 	}
 }
 
-/*
-func testPayload() *pb.Payload {
-	return &pb.Payload{
-		Header: testPayloadHeader(),
-		Data:   []byte("test"),
-	}
-}
-
-func testEnvelope() *pb.Envelope {
-	// No need to set the signature
-	payloadBytes, _ := proto.Marshal(testPayload())
-	return &pb.Envelope{Payload: payloadBytes}
-}
-
-func testBlock() *pb.Block {
-	// No need to set the block's Header, or Metadata
-	envelopeBytes, _ := proto.Marshal(testEnvelope())
-	return &pb.Block{
-		Data: &pb.BlockData{
-			Data: [][]byte{envelopeBytes},
-		},
-	}
-}
-*/
-
 func testPayloadConfigEnvelope() *pb.Payload {
 	data, _ := proto.Marshal(testConfigurationEnvelope())
 	return &pb.Payload{
@@ -198,15 +134,13 @@ func testConfigurationBlock() *pb.Block {
 }
 
 func testConfigurationEnvelope() *pb.ConfigurationEnvelope {
-	chainHeader := testChainHeader()
-	configItem := makeConfigurationItem(chainHeader, pb.ConfigurationItem_Orderer, 0, "defaultPolicyID", "abc", []byte("test"))
+	configItem := makeConfigurationItem(pb.ConfigurationItem_Orderer, 0, "defaultPolicyID", "abc", []byte("test"))
 	signedConfigItem, _ := makeSignedConfigurationItem(configItem, nil)
 	return makeConfigurationEnvelope(signedConfigItem)
 } // testConfigurationEnvelope
 
-func makeConfigurationItem(ch *pb.ChainHeader, configItemType pb.ConfigurationItem_ConfigurationType, lastModified uint64, modPolicyID string, key string, value []byte) *pb.ConfigurationItem {
+func makeConfigurationItem(configItemType pb.ConfigurationItem_ConfigurationType, lastModified uint64, modPolicyID string, key string, value []byte) *pb.ConfigurationItem {
 	return &pb.ConfigurationItem{
-		Header:             ch,
 		Type:               configItemType,
 		LastModified:       lastModified,
 		ModificationPolicy: modPolicyID,

@@ -20,13 +20,13 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/ledger/testutil"
 	util2 "github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/core/ledger/ledgermgmt"
-	"github.com/hyperledger/fabric/core/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/util"
+	mocktxvalidator "github.com/hyperledger/fabric/core/mocks/txvalidator"
 	"github.com/hyperledger/fabric/core/mocks/validator"
 	"github.com/hyperledger/fabric/protos/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -39,10 +39,10 @@ func TestKVLedgerBlockStorage(t *testing.T) {
 	ledger, _ := ledgermgmt.CreateLedger("TestLedger")
 	defer ledger.Close()
 
-	validator := &txValidator{ledger, &validator.MockVsccValidator{}}
+	validator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, &validator.MockVsccValidator{}}
 
 	bcInfo, _ := ledger.GetBlockchainInfo()
-	testutil.AssertEquals(t, bcInfo, &pb.BlockchainInfo{
+	testutil.AssertEquals(t, bcInfo, &common.BlockchainInfo{
 		Height: 0, CurrentBlockHash: nil, PreviousBlockHash: nil})
 
 	simulator, _ := ledger.NewTxSimulator()
@@ -70,7 +70,7 @@ func TestNewTxValidator_DuplicateTransactions(t *testing.T) {
 	ledger, _ := ledgermgmt.CreateLedger("TestLedger")
 	defer ledger.Close()
 
-	validator := &txValidator{ledger, &validator.MockVsccValidator{}}
+	validator := &txValidator{&mocktxvalidator.Support{LedgerVal: ledger}, &validator.MockVsccValidator{}}
 
 	// Create simeple endorsement transaction
 	payload := &common.Payload{

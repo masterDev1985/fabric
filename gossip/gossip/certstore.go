@@ -21,14 +21,14 @@ import (
 	"fmt"
 	"sync"
 
-	prot "github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip/pull"
 	"github.com/hyperledger/fabric/gossip/identity"
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
+	"github.com/op/go-logging"
 )
 
 // certStore supports pull dissemination of identity messages
@@ -37,13 +37,13 @@ type certStore struct {
 	selfIdentity api.PeerIdentityType
 	idMapper     identity.Mapper
 	pull         pull.Mediator
-	logger       *util.Logger
+	logger       *logging.Logger
 	mcs          api.MessageCryptoService
 }
 
 func newCertStore(puller pull.Mediator, idMapper identity.Mapper, selfIdentity api.PeerIdentityType, mcs api.MessageCryptoService) *certStore {
 	selfPKIID := idMapper.GetPKIidOfCert(selfIdentity)
-	logger := util.GetLogger("certStore", string(selfPKIID))
+	logger := util.GetLogger(util.LoggingGossipModule, string(selfPKIID))
 	if err := idMapper.Put(selfPKIID, selfIdentity); err != nil {
 		logger.Error("Failed associating self PKIID to cert:", err)
 		panic(fmt.Errorf("Failed associating self PKIID to cert: %v", err))
@@ -56,8 +56,6 @@ func newCertStore(puller pull.Mediator, idMapper identity.Mapper, selfIdentity a
 		selfIdentity: selfIdentity,
 		logger:       logger,
 	}
-
-	certStore.logger = util.GetLogger("certStore", string(selfPKIID))
 
 	if err := certStore.idMapper.Put(selfPKIID, selfIdentity); err != nil {
 		certStore.logger.Panic("Failed associating self PKIID to cert:", err)
@@ -99,27 +97,24 @@ func (cs *certStore) handleMessage(msg comm.ReceivedMessage) {
 func (cs *certStore) validateIdentityMsg(msg *proto.GossipMessage) error {
 	idMsg := msg.GetPeerIdentity()
 	if idMsg == nil {
-		return fmt.Errorf("Identity empty:", msg)
+		return fmt.Errorf("Identity empty: %+v", msg)
 	}
 	pkiID := idMsg.PkiID
 	cert := idMsg.Cert
-	sig := idMsg.Sig
 	calculatedPKIID := cs.mcs.GetPKIidOfCert(api.PeerIdentityType(cert))
 	claimedPKIID := common.PKIidType(pkiID)
 	if !bytes.Equal(calculatedPKIID, claimedPKIID) {
 		return fmt.Errorf("Calculated pkiID doesn't match identity: calculated: %v, claimedPKI-ID: %v", calculatedPKIID, claimedPKIID)
 	}
 
-	idMsg.Sig = nil
-	b, err := prot.Marshal(idMsg)
-	if err != nil {
-		return fmt.Errorf("Failed marshalling: %v", err)
+	verifier := func(peerIdentity []byte, signature, message []byte) error {
+		return cs.mcs.Verify(api.PeerIdentityType(peerIdentity), signature, message)
 	}
-	err = cs.mcs.Verify(api.PeerIdentityType(cert), sig, b)
+
+	err := msg.Verify(cert, verifier)
 	if err != nil {
 		return fmt.Errorf("Failed verifying message: %v", err)
 	}
-	idMsg.Sig = sig
 
 	return cs.mcs.ValidateIdentity(api.PeerIdentityType(idMsg.Cert))
 }
@@ -129,23 +124,9 @@ func (cs *certStore) createIdentityMessage() *proto.GossipMessage {
 		Cert:     cs.selfIdentity,
 		Metadata: nil,
 		PkiID:    cs.idMapper.GetPKIidOfCert(cs.selfIdentity),
-		Sig:      nil,
 	}
 
-	b, err := prot.Marshal(identity)
-	if err != nil {
-		cs.logger.Warning("Failed marshalling identity message:", err)
-		return nil
-	}
-
-	sig, err := cs.idMapper.Sign(b)
-	if err != nil {
-		cs.logger.Warning("Failed signing identity message:", err)
-		return nil
-	}
-	identity.Sig = sig
-
-	return &proto.GossipMessage{
+	m := &proto.GossipMessage{
 		Channel: nil,
 		Nonce:   0,
 		Tag:     proto.GossipMessage_EMPTY,
@@ -153,6 +134,16 @@ func (cs *certStore) createIdentityMessage() *proto.GossipMessage {
 			PeerIdentity: identity,
 		},
 	}
+
+	signer := func(msg []byte) ([]byte, error) {
+		return cs.idMapper.Sign(msg)
+	}
+	if err := m.Sign(signer); err != nil {
+		cs.logger.Warning("Failed signing identity message:", err)
+		return nil
+	}
+
+	return m
 }
 
 func (cs *certStore) stop() {

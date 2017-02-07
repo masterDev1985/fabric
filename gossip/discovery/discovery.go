@@ -17,17 +17,17 @@ limitations under the License.
 package discovery
 
 import (
-	"github.com/hyperledger/fabric/gossip/proto"
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/protos/gossip"
 )
 
 // CryptoService is an interface that the discovery expects to be implemented and passed on creation
 type CryptoService interface {
-	// validateAliveMsg validates that an Alive message is authentic
-	ValidateAliveMsg(*proto.AliveMessage) bool
+	// ValidateAliveMsg validates that an Alive message is authentic
+	ValidateAliveMsg(*proto.GossipMessage) bool
 
-	// SignMessage signs an AliveMessage and updates its signature field
-	SignMessage(*proto.AliveMessage) *proto.AliveMessage
+	// SignMessage signs a message
+	SignMessage(m *proto.GossipMessage) *proto.GossipMessage
 }
 
 // CommService is an interface that the discovery expects to be implemented and passed on creation
@@ -80,4 +80,7 @@ type Discovery interface {
 	// InitiateSync makes the instance ask a given number of peers
 	// for their membership information
 	InitiateSync(peerNum int)
+
+	// Connect makes this instance to connect to a remote instance
+	Connect(NetworkMember)
 }

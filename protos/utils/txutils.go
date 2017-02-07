@@ -60,7 +60,7 @@ func GetPayloads(txActions *peer.TransactionAction) (*peer.ChaincodeActionPayloa
 	return ccPayload, respPayload, nil
 }
 
-// GetEndorserTxFromBlock gets Transaction from Block.Data.Data
+// GetEnvelopeFromBlock gets an envelope from a block's Data field.
 func GetEnvelopeFromBlock(data []byte) (*common.Envelope, error) {
 	//Block always begins with an envelope
 	var err error
@@ -72,7 +72,7 @@ func GetEnvelopeFromBlock(data []byte) (*common.Envelope, error) {
 	return env, nil
 }
 
-// assemble an Envelope message from proposal, endorsements and a signer.
+// CreateSignedTx assembles an Envelope message from proposal, endorsements, and a signer.
 // This function should be called by a client when it has collected enough endorsements
 // for a proposal to create a transaction and submit it to peers for ordering
 func CreateSignedTx(proposal *peer.Proposal, signer msp.SigningIdentity, resps ...*peer.ProposalResponse) (*common.Envelope, error) {
@@ -182,7 +182,8 @@ func CreateSignedTx(proposal *peer.Proposal, signer msp.SigningIdentity, resps .
 	return &common.Envelope{Payload: paylBytes, Signature: sig}, nil
 }
 
-func CreateProposalResponse(hdr []byte, payl []byte, results []byte, events []byte, visibility []byte, signingEndorser msp.SigningIdentity) (*peer.ProposalResponse, error) {
+// CreateProposalResponse creates a proposal response.
+func CreateProposalResponse(hdr []byte, payl []byte, response *peer.Response, results []byte, events []byte, visibility []byte, signingEndorser msp.SigningIdentity) (*peer.ProposalResponse, error) {
 	// obtain the proposal hash given proposal header, payload and the requested visibility
 	pHashBytes, err := GetProposalHash1(hdr, payl, visibility)
 	if err != nil {
@@ -190,7 +191,7 @@ func CreateProposalResponse(hdr []byte, payl []byte, results []byte, events []by
 	}
 
 	// get the bytes of the proposal response payload - we need to sign them
-	prpBytes, err := GetBytesProposalResponsePayload(pHashBytes, results, events)
+	prpBytes, err := GetBytesProposalResponsePayload(pHashBytes, response, results, events)
 	if err != nil {
 		return nil, errors.New("Failure while unmarshalling the ProposalResponsePayload")
 	}

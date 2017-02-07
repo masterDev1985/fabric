@@ -45,7 +45,7 @@ func GetChainIDFromBlock(block *cb.Block) (string, error) {
 	return payload.Header.ChainHeader.ChainID, nil
 }
 
-// GetMetadataFromBlock retrieves metadata at the specified index
+// GetMetadataFromBlock retrieves metadata at the specified index.
 func GetMetadataFromBlock(block *cb.Block, index cb.BlockMetadataIndex) (*cb.Metadata, error) {
 	md := &cb.Metadata{}
 	err := proto.Unmarshal(block.Metadata.Metadata[index], md)
@@ -53,6 +53,15 @@ func GetMetadataFromBlock(block *cb.Block, index cb.BlockMetadataIndex) (*cb.Met
 		return nil, err
 	}
 	return md, nil
+}
+
+// GetMetadataFromBlockOrPanic retrieves metadata at the specified index, or panics on error.
+func GetMetadataFromBlockOrPanic(block *cb.Block, index cb.BlockMetadataIndex) *cb.Metadata {
+	md, err := GetMetadataFromBlock(block, index)
+	if err != nil {
+		panic(err)
+	}
+	return md
 }
 
 // GetLastConfigurationIndexFromBlock retrieves the index of the last configuration block as encoded in the block metadata
@@ -67,6 +76,15 @@ func GetLastConfigurationIndexFromBlock(block *cb.Block) (uint64, error) {
 		return 0, err
 	}
 	return lc.Index, nil
+}
+
+// GetLastConfigurationIndexFromBlockOrPanic retrieves the index of the last configuration block as encoded in the block metadata, or panics on error.
+func GetLastConfigurationIndexFromBlockOrPanic(block *cb.Block) uint64 {
+	index, err := GetLastConfigurationIndexFromBlock(block)
+	if err != nil {
+		panic(err)
+	}
+	return index
 }
 
 // GetBlockFromBlockBytes marshals the bytes into Block
@@ -95,43 +113,13 @@ func InitBlockMetadata(block *cb.Block) {
 	}
 }
 
-const (
-	epoch                           = uint64(0)
-	messageVersion                  = int32(1)
-	lastModified                    = uint64(0)
-	mspKey                          = "MSP"
-	XXX_DefaultModificationPolicyID = "DefaultModificationPolicy" // Break an import cycle during work to remove the below configtx construction methods
-)
+const xxxDefaultModificationPolicyID = "DefaultModificationPolicy" // Break an import cycle during work to remove the below configtx construction methods
 
-func createConfigItem(chainID string,
-	configItemKey string,
-	configItemValue []byte,
-	modPolicy string) *cb.ConfigurationItem {
-
-	ciChainHeader := MakeChainHeader(cb.HeaderType_CONFIGURATION_ITEM,
-		messageVersion, chainID, epoch)
-	configItem := MakeConfigurationItem(ciChainHeader,
-		cb.ConfigurationItem_Orderer, lastModified, modPolicy,
-		configItemKey, configItemValue)
-
-	return configItem
-}
-
-func createSignedConfigItem(chainID string,
-	configItemKey string,
-	configItemValue []byte,
-	modPolicy string) *cb.SignedConfigurationItem {
-	configItem := createConfigItem(chainID, configItemKey, configItemValue, modPolicy)
-	return &cb.SignedConfigurationItem{
-		ConfigurationItem: MarshalOrPanic(configItem),
-		Signatures:        nil}
-}
-
-// This function is needed to locate the MSP test configuration when running
+// GetTESTMSPConfigPath This function is needed to locate the MSP test configuration when running
 // in CI build env or local with "make unit-test". A better way to manage this
 // is to define a config path in yaml that may point to test or production
 // location of the config
-func getTESTMSPConfigPath() string {
+func GetTESTMSPConfigPath() string {
 	cfgPath := os.Getenv("PEER_CFG_PATH") + "/msp/sampleconfig/"
 	if _, err := ioutil.ReadDir(cfgPath); err != nil {
 		cfgPath = os.Getenv("GOPATH") + "/src/github.com/hyperledger/fabric/msp/sampleconfig/"
@@ -140,27 +128,21 @@ func getTESTMSPConfigPath() string {
 }
 
 // EncodeMSPUnsigned gets the unsigned configuration item with the default MSP
-func EncodeMSPUnsigned(testChainID string) *cb.ConfigurationItem {
-	cfgPath := getTESTMSPConfigPath()
+func EncodeMSPUnsigned(chainID string) *cb.ConfigurationItem {
+	cfgPath := GetTESTMSPConfigPath()
 	conf, err := msp.GetLocalMspConfig(cfgPath)
 	if err != nil {
 		panic(fmt.Sprintf("GetLocalMspConfig failed, err %s", err))
 	}
-	return createConfigItem(testChainID,
-		mspKey,
-		MarshalOrPanic(conf),
-		XXX_DefaultModificationPolicyID)
+	return &cb.ConfigurationItem{
+		Type:               cb.ConfigurationItem_MSP,
+		Key:                "DEFAULT", // XXX this should really be computed dynamically, but it's better than the old wrong "MSP"
+		Value:              MarshalOrPanic(conf),
+		ModificationPolicy: xxxDefaultModificationPolicyID,
+	}
 }
 
 // EncodeMSP gets the signed configuration item with the default MSP
-func EncodeMSP(testChainID string) *cb.SignedConfigurationItem {
-	cfgPath := getTESTMSPConfigPath()
-	conf, err := msp.GetLocalMspConfig(cfgPath)
-	if err != nil {
-		panic(fmt.Sprintf("GetLocalMspConfig failed, err %s", err))
-	}
-	return createSignedConfigItem(testChainID,
-		mspKey,
-		MarshalOrPanic(conf),
-		XXX_DefaultModificationPolicyID)
+func EncodeMSP(chainID string) *cb.SignedConfigurationItem {
+	return &cb.SignedConfigurationItem{ConfigurationItem: MarshalOrPanic(EncodeMSPUnsigned(chainID))}
 }

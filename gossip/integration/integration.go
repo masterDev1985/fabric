@@ -17,8 +17,6 @@ limitations under the License.
 package integration
 
 import (
-	"bytes"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -26,15 +24,13 @@ import (
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/gossip"
+	"github.com/hyperledger/fabric/peer/gossip/mcs"
+	"github.com/hyperledger/fabric/peer/gossip/sa"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 )
 
 // This file is used to bootstrap a gossip instance for integration/demo purposes ONLY
-
-// TODO: This is a temporary fix to make gossip multi-channel work
-//       because we don't support cross-organization gossip yet.
-// 	 this will be removed once we support gossip across orgs.
-var orgId = []byte("ORG1")
 
 func newConfig(selfEndpoint string, bootPeers ...string) *gossip.Config {
 	port, err := strconv.ParseInt(strings.Split(selfEndpoint, ":")[1], 10, 64)
@@ -61,57 +57,53 @@ func newConfig(selfEndpoint string, bootPeers ...string) *gossip.Config {
 }
 
 // NewGossipComponent creates a gossip component that attaches itself to the given gRPC server
-func NewGossipComponent(endpoint string, s *grpc.Server, dialOpts []grpc.DialOption, bootPeers ...string) gossip.Gossip {
+func NewGossipComponent(identity []byte, endpoint string, s *grpc.Server, dialOpts []grpc.DialOption, bootPeers ...string) gossip.Gossip {
+	if overrideEndpoint := viper.GetString("peer.gossip.endpoint"); overrideEndpoint != "" {
+		endpoint = overrideEndpoint
+	}
+
 	conf := newConfig(endpoint, bootPeers...)
-	return gossip.NewGossipService(conf, s, &orgCryptoService{}, &naiveCryptoService{}, []byte(endpoint), dialOpts...)
+	cryptSvc := mcs.NewMessageCryptoService()
+	secAdv := sa.NewSecurityAdvisor()
+
+	if viper.GetBool("peer.gossip.ignoresecurity") {
+		sec := &secImpl{[]byte(endpoint)}
+		cryptSvc = sec
+		secAdv = sec
+		identity = []byte(endpoint)
+	}
+
+	return gossip.NewGossipService(conf, s, secAdv, cryptSvc, identity, dialOpts...)
 }
 
-type naiveCryptoService struct {
+type secImpl struct {
+	identity []byte
 }
 
-// ValidateIdentity validates the given identity.
-// Returns error on failure, nil on success
-func (*naiveCryptoService) ValidateIdentity(peerIdentity api.PeerIdentityType) error {
-	return nil
+func (*secImpl) OrgByPeerIdentity(api.PeerIdentityType) api.OrgIdentityType {
+	return api.OrgIdentityType("DEFAULT")
 }
 
-// GetPKIidOfCert returns the PKI-ID of a peer's identity
-func (*naiveCryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) common.PKIidType {
+func (s *secImpl) GetPKIidOfCert(peerIdentity api.PeerIdentityType) common.PKIidType {
 	return common.PKIidType(peerIdentity)
 }
 
-// VerifyBlock returns nil if the block is properly signed,
-// else returns error
-func (*naiveCryptoService) VerifyBlock(signedBlock api.SignedBlock) error {
+func (s *secImpl) VerifyBlock(chainID common.ChainID, signedBlock api.SignedBlock) error {
 	return nil
 }
 
-// Sign signs msg with this peer's signing key and outputs
-// the signature if no error occurred.
-func (*naiveCryptoService) Sign(msg []byte) ([]byte, error) {
+func (s *secImpl) Sign(msg []byte) ([]byte, error) {
 	return msg, nil
 }
 
-// Verify verifies a signature on a message that came from a peer with a certain vkID
-func (cs *naiveCryptoService) Verify(vkID api.PeerIdentityType, signature, message []byte) error {
-	if !bytes.Equal(signature, message) {
-		return fmt.Errorf("Invalid signature")
-	}
+func (s *secImpl) Verify(peerIdentity api.PeerIdentityType, signature, message []byte) error {
 	return nil
 }
 
-type orgCryptoService struct {
-
+func (s *secImpl) VerifyByChannel(chainID common.ChainID, peerIdentity api.PeerIdentityType, signature, message []byte) error {
+	return nil
 }
 
-// OrgByPeerIdentity returns the OrgIdentityType
-// of a given peer identity
-func (*orgCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
-	return orgId
-}
-
-// Verify verifies a JoinChannelMessage, returns nil on success,
-// and an error on failure
-func (*orgCryptoService) Verify(joinChanMsg api.JoinChannelMessage) error {
+func (s *secImpl) ValidateIdentity(peerIdentity api.PeerIdentityType) error {
 	return nil
 }

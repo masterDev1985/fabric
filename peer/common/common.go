@@ -24,8 +24,8 @@ import (
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/core/errors"
 	"github.com/hyperledger/fabric/core/peer"
-	"github.com/hyperledger/fabric/core/peer/msp"
 	"github.com/hyperledger/fabric/msp"
+	mspmgmt "github.com/hyperledger/fabric/msp/mgmt"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/spf13/viper"
 )
@@ -79,30 +79,39 @@ func InitCrypto(mspMgrConfigDir string) error {
 func GetEndorserClient() (pb.EndorserClient, error) {
 	clientConn, err := peer.NewPeerClientConnection()
 	if err != nil {
-		err = errors.ErrorWithCallstack(errors.Peer, errors.PeerConnectionError, err.Error())
+		err = errors.ErrorWithCallstack("Peer", "ConnectionError", "Error trying to connect to local peer: %s", err.Error())
 		return nil, err
 	}
 	endorserClient := pb.NewEndorserClient(clientConn)
 	return endorserClient, nil
 }
 
+func GetAnchorPeersParser(anchorPeerParam string) *AnchorPeerParser {
+	if len(anchorPeerParam) == 0 {
+		return GetDefaultAnchorPeerParser()
+	}
+	return &AnchorPeerParser{anchorPeerParam: anchorPeerParam}
+}
+
 // GetAdminClient returns a new admin client connection for this peer
 func GetAdminClient() (pb.AdminClient, error) {
 	clientConn, err := peer.NewPeerClientConnection()
 	if err != nil {
-		err = errors.ErrorWithCallstack(errors.Peer, errors.PeerConnectionError, err.Error())
+		err = errors.ErrorWithCallstack("Peer", "ConnectionError", "Error trying to connect to local peer: %s", err.Error())
 		return nil, err
 	}
 	adminClient := pb.NewAdminClient(clientConn)
 	return adminClient, nil
 }
 
-// SetErrorLoggingLevel sets the 'error' module's logger to the value in
+// SetLogLevelFromViper sets the log level for 'module' logger to the value in
 // core.yaml
-func SetErrorLoggingLevel() error {
-	viperErrorLoggingLevel := viper.GetString("logging.error")
-	_, err := flogging.SetModuleLevel("error", viperErrorLoggingLevel)
-
+func SetLogLevelFromViper(module string) error {
+	var err error
+	if module != "" {
+		logLevelFromViper := viper.GetString("logging." + module)
+		_, err = flogging.SetModuleLevel(module, logLevelFromViper)
+	}
 	return err
 }
 

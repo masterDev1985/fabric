@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Interfaces to allow testing of chaincode apps with mocked up stubs
 package shim
 
 import (
 	"github.com/golang/protobuf/ptypes/timestamp"
+
+	pb "github.com/hyperledger/fabric/protos/peer"
 )
 
 // Chaincode interface must be implemented by all chaincodes. The fabric runs
@@ -26,11 +27,10 @@ import (
 type Chaincode interface {
 	// Init is called during Deploy transaction after the container has been
 	// established, allowing the chaincode to initialize its internal data
-	Init(stub ChaincodeStubInterface) ([]byte, error)
-
+	Init(stub ChaincodeStubInterface) pb.Response
 	// Invoke is called for every Invoke transactions. The chaincode may change
 	// its state variables
-	Invoke(stub ChaincodeStubInterface) ([]byte, error)
+	Invoke(stub ChaincodeStubInterface) pb.Response
 }
 
 // ChaincodeStubInterface is used by deployable chaincode apps to access and modify their ledgers
@@ -50,8 +50,11 @@ type ChaincodeStubInterface interface {
 
 	// InvokeChaincode locally calls the specified chaincode `Invoke` using the
 	// same transaction context; that is, chaincode calling chaincode doesn't
-	// create a new transaction message.
-	InvokeChaincode(chaincodeName string, args [][]byte) ([]byte, error)
+	// create a new transaction message. If the called chaincode is on a different
+	// channel, only the Response is returned to the caller; any PutState calls
+	// will not have any effect on the ledger of the channel; effectively it is
+	// a `Query`. If `channel` is empty, the caller's channel is assumed.
+	InvokeChaincode(chaincodeName string, args [][]byte, channel string) pb.Response
 
 	// GetState returns the byte array value specified by the `key`.
 	GetState(key string) ([]byte, error)
@@ -65,21 +68,32 @@ type ChaincodeStubInterface interface {
 	// RangeQueryState function can be invoked by a chaincode to query of a range
 	// of keys in the state. Assuming the startKey and endKey are in lexical
 	// an iterator will be returned that can be used to iterate over all keys
-	// between the startKey and endKey, inclusive. The order in which keys are
+	// between the startKey (inclusive) and endKey (exclusive). The order in which keys are
 	// returned by the iterator is random.
-	RangeQueryState(startKey, endKey string) (StateRangeQueryIteratorInterface, error)
+	RangeQueryState(startKey, endKey string) (StateQueryIteratorInterface, error)
 
-	//PartialCompositeKeyQuery function can be invoked by a chaincode to query the
-	//state based on a given partial composite key. This function returns an
-	//iterator which can be used to iterate over all composite keys whose prefix
-	//matches the given partial composite key. This function should be used only for
-	//a partial composite key. For a full composite key, an iter with empty response
-	//would be returned.
-	PartialCompositeKeyQuery(objectType string, keys []string) (StateRangeQueryIteratorInterface, error)
+	// PartialCompositeKeyQuery function can be invoked by a chaincode to query the
+	// state based on a given partial composite key. This function returns an
+	// iterator which can be used to iterate over all composite keys whose prefix
+	// matches the given partial composite key. This function should be used only for
+	// a partial composite key. For a full composite key, an iter with empty response
+	// would be returned.
+	PartialCompositeKeyQuery(objectType string, keys []string) (StateQueryIteratorInterface, error)
 
-	//Given a list of attributes, createCompundKey function combines these attributes
-	//to form a composite key.
+	// Given a list of attributes, CreateCompositeKey function combines these attributes
+	// to form a composite key.
 	CreateCompositeKey(objectType string, attributes []string) (string, error)
+
+	// GetQueryResult function can be invoked by a chaincode to perform a
+	// rich query against state database.  Only supported by state database implementations
+	// that support rich query.  The query string is in the syntax of the underlying
+	// state database. An iterator is returned which can be used to iterate (next) over
+	// the query result set
+	GetQueryResult(query string) (StateQueryIteratorInterface, error)
+
+	// Given a composite key, SplitCompositeKey function splits the key into attributes
+	// on which the composite key was formed.
+	SplitCompositeKey(compositeKey string) (string, []string, error)
 
 	// GetCallerCertificate returns caller certificate
 	GetCallerCertificate() ([]byte, error)
@@ -103,9 +117,9 @@ type ChaincodeStubInterface interface {
 	SetEvent(name string, payload []byte) error
 }
 
-// StateRangeQueryIteratorInterface allows a chaincode to iterate over a range of
+// StateQueryIteratorInterface allows a chaincode to iterate over a set of
 // key/value pairs in the state.
-type StateRangeQueryIteratorInterface interface {
+type StateQueryIteratorInterface interface {
 
 	// HasNext returns true if the range query iterator contains additional keys
 	// and values.

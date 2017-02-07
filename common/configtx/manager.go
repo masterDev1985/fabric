@@ -17,14 +17,29 @@ limitations under the License.
 package configtx
 
 import (
-	"bytes"
 	"fmt"
+	"reflect"
+	"regexp"
 
 	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
 
 	"errors"
+
 	"github.com/golang/protobuf/proto"
+	logging "github.com/op/go-logging"
+)
+
+var logger = logging.MustGetLogger("common/configtx")
+
+// Constraints for valid chain IDs
+var (
+	allowedChars = "[a-zA-Z0-9.-]+"
+	maxLength    = 249
+	illegalNames = map[string]struct{}{
+		".":  struct{}{},
+		"..": struct{}{},
+	}
 )
 
 // Handler provides a hook which allows other pieces of code to participate in config proposals
@@ -44,6 +59,8 @@ type Handler interface {
 
 // Manager provides a mechanism to query and update configuration
 type Manager interface {
+	Resources
+
 	// Apply attempts to apply a configtx to become the new configuration
 	Apply(configtx *cb.ConfigurationEnvelope) error
 
@@ -57,8 +74,8 @@ type Manager interface {
 	Sequence() uint64
 }
 
-// DefaultModificationPolicyID is the ID of the policy used when no other policy can be resolved, for instance when attempting to create a new config item
-const DefaultModificationPolicyID = "DefaultModificationPolicy"
+// NewConfigurationItemPolicyKey is the ID of the policy used when no other policy can be resolved, for instance when attempting to create a new config item
+const NewConfigurationItemPolicyKey = "NewConfigurationItemPolicy"
 
 type acceptAllPolicy struct{}
 
@@ -67,11 +84,11 @@ func (ap *acceptAllPolicy) Evaluate(signedData []*cb.SignedData) error {
 }
 
 type configurationManager struct {
+	Initializer
 	sequence      uint64
 	chainID       string
-	pm            policies.Manager
 	configuration map[cb.ConfigurationItem_ConfigurationType]map[string]*cb.ConfigurationItem
-	handlers      map[cb.ConfigurationItem_ConfigurationType]Handler
+	callOnUpdate  []func(Manager)
 }
 
 // computeChainIDAndSequence returns the chain id and the sequence number for a configuration envelope
@@ -81,44 +98,71 @@ func computeChainIDAndSequence(configtx *cb.ConfigurationEnvelope) (string, uint
 		return "", 0, errors.New("Empty envelope unsupported")
 	}
 
-	m := uint64(0)     //configtx.Items[0].LastModified
-	var chainID string //:= configtx.Items[0].Header.ChainID
+	m := uint64(0)
+
+	if configtx.Header == nil {
+		return "", 0, fmt.Errorf("Header not set")
+	}
+
+	if configtx.Header.ChainID == "" {
+		return "", 0, fmt.Errorf("Header chainID was not set")
+	}
+
+	chainID := configtx.Header.ChainID
+
+	if err := validateChainID(chainID); err != nil {
+		return "", 0, err
+	}
 
 	for _, signedItem := range configtx.Items {
 		item := &cb.ConfigurationItem{}
-		err := proto.Unmarshal(signedItem.ConfigurationItem, item)
-		if err != nil {
+		if err := proto.Unmarshal(signedItem.ConfigurationItem, item); err != nil {
 			return "", 0, fmt.Errorf("Error unmarshaling signedItem.ConfigurationItem: %s", err)
 		}
 
 		if item.LastModified > m {
 			m = item.LastModified
 		}
-
-		if item.Header == nil {
-			return "", 0, fmt.Errorf("Header not set: %v", item)
-		}
-
-		if item.Header.ChainID == "" {
-			return "", 0, fmt.Errorf("Header chainID was not set: %v", item)
-		}
-
-		if chainID == "" {
-			chainID = item.Header.ChainID
-		} else {
-			if chainID != item.Header.ChainID {
-				return "", 0, fmt.Errorf("Mismatched chainIDs in envelope %s != %s", chainID, item.Header.ChainID)
-			}
-		}
 	}
 
 	return chainID, m, nil
 }
 
-// NewConfigurationManager creates a new Manager unless an error is encountered
-func NewConfigurationManager(configtx *cb.ConfigurationEnvelope, pm policies.Manager, handlers map[cb.ConfigurationItem_ConfigurationType]Handler) (Manager, error) {
+// validateChainID makes sure that proposed chain IDs (i.e. channel names)
+// comply with the following restrictions:
+//      1. Contain only ASCII alphanumerics, dots '.', dashes '-'
+//      2. Are shorter than 250 characters.
+//      3. Are not the strings "." or "..".
+//
+// Our hand here is forced by:
+// https://github.com/apache/kafka/blob/trunk/core/src/main/scala/kafka/common/Topic.scala#L29
+func validateChainID(chainID string) error {
+	re, _ := regexp.Compile(allowedChars)
+	// Length
+	if len(chainID) <= 0 {
+		return fmt.Errorf("chain ID illegal, cannot be empty")
+	}
+	if len(chainID) > maxLength {
+		return fmt.Errorf("chain ID illegal, cannot be longer than %d", maxLength)
+	}
+	// Illegal name
+	if _, ok := illegalNames[chainID]; ok {
+		return fmt.Errorf("name '%s' for chain ID is not allowed", chainID)
+	}
+	// Illegal characters
+	matched := re.FindString(chainID)
+	if len(matched) != len(chainID) {
+		return fmt.Errorf("Chain ID '%s' contains illegal characters", chainID)
+	}
+
+	return nil
+}
+
+// NewManagerImpl creates a new Manager unless an error is encountered, each element of the callOnUpdate slice
+// is invoked when a new configuration is committed
+func NewManagerImpl(configtx *cb.ConfigurationEnvelope, initializer Initializer, callOnUpdate []func(Manager)) (Manager, error) {
 	for ctype := range cb.ConfigurationItem_ConfigurationType_name {
-		if _, ok := handlers[cb.ConfigurationItem_ConfigurationType(ctype)]; !ok {
+		if _, ok := initializer.Handlers()[cb.ConfigurationItem_ConfigurationType(ctype)]; !ok {
 			return nil, errors.New("Must supply a handler for all known types")
 		}
 	}
@@ -129,11 +173,11 @@ func NewConfigurationManager(configtx *cb.ConfigurationEnvelope, pm policies.Man
 	}
 
 	cm := &configurationManager{
+		Initializer:   initializer,
 		sequence:      seq - 1,
 		chainID:       chainID,
-		pm:            pm,
-		handlers:      handlers,
 		configuration: makeConfigMap(),
+		callOnUpdate:  callOnUpdate,
 	}
 
 	err = cm.Apply(configtx)
@@ -154,20 +198,26 @@ func makeConfigMap() map[cb.ConfigurationItem_ConfigurationType]map[string]*cb.C
 }
 
 func (cm *configurationManager) beginHandlers() {
+	logger.Debugf("Beginning new configuration for chain %s", cm.chainID)
 	for ctype := range cb.ConfigurationItem_ConfigurationType_name {
-		cm.handlers[cb.ConfigurationItem_ConfigurationType(ctype)].BeginConfig()
+		cm.Initializer.Handlers()[cb.ConfigurationItem_ConfigurationType(ctype)].BeginConfig()
 	}
 }
 
 func (cm *configurationManager) rollbackHandlers() {
+	logger.Debugf("Rolling back configuration for chain %s", cm.chainID)
 	for ctype := range cb.ConfigurationItem_ConfigurationType_name {
-		cm.handlers[cb.ConfigurationItem_ConfigurationType(ctype)].RollbackConfig()
+		cm.Initializer.Handlers()[cb.ConfigurationItem_ConfigurationType(ctype)].RollbackConfig()
 	}
 }
 
 func (cm *configurationManager) commitHandlers() {
+	logger.Debugf("Committing configuration for chain %s", cm.chainID)
 	for ctype := range cb.ConfigurationItem_ConfigurationType_name {
-		cm.handlers[cb.ConfigurationItem_ConfigurationType(ctype)].CommitConfig()
+		cm.Initializer.Handlers()[cb.ConfigurationItem_ConfigurationType(ctype)].CommitConfig()
+	}
+	for _, callback := range cm.callOnUpdate {
+		callback(cm)
 	}
 }
 
@@ -187,7 +237,7 @@ func (cm *configurationManager) processConfig(configtx *cb.ConfigurationEnvelope
 		return nil, fmt.Errorf("Config is for the wrong chain, expected %s, got %s", cm.chainID, chainID)
 	}
 
-	defaultModificationPolicy, defaultPolicySet := cm.pm.GetPolicy(DefaultModificationPolicyID)
+	defaultModificationPolicy, defaultPolicySet := cm.PolicyManager().GetPolicy(NewConfigurationItemPolicyKey)
 
 	// If the default modification policy is not set, it indicates this is an uninitialized chain, so be permissive of modification
 	if !defaultPolicySet {
@@ -205,33 +255,12 @@ func (cm *configurationManager) processConfig(configtx *cb.ConfigurationEnvelope
 			return nil, fmt.Errorf("Error unmarshaling ConfigurationItem: %s", err)
 		}
 
-		// Get the modification policy for this config item if one was previously specified
-		// or the default if this is a new config item
-		var policy policies.Policy
-		oldItem, ok := cm.configuration[config.Type][config.Key]
-		if ok {
-			policy, _ = cm.pm.GetPolicy(oldItem.ModificationPolicy)
-		} else {
-			policy = defaultModificationPolicy
-		}
-
-		// Get signatures
-		signedData, err := entry.AsSignedData()
-		if err != nil {
-			return nil, err
-		}
-
-		// Ensure the policy is satisfied
-		if err = policy.Evaluate(signedData); err != nil {
-			return nil, err
-		}
-
 		// Ensure the config sequence numbers are correct to prevent replay attacks
-		isModified := false
+		var isModified bool
 
 		if val, ok := cm.configuration[config.Type][config.Key]; ok {
-			// Config was modified if the LastModified or the Data contents changed
-			isModified = (val.LastModified != config.LastModified) || !bytes.Equal(config.Value, val.Value)
+			// Config was modified if any of the contents changed
+			isModified = !reflect.DeepEqual(val, config)
 		} else {
 			if config.LastModified != seq {
 				return nil, fmt.Errorf("Key %v for type %v was new, but had an older Sequence %d set", config.Key, config.Type, config.LastModified)
@@ -239,17 +268,41 @@ func (cm *configurationManager) processConfig(configtx *cb.ConfigurationEnvelope
 			isModified = true
 		}
 
-		// If a config item was modified, its LastModified must be set correctly
+		// If a config item was modified, its LastModified must be set correctly, and it must satisfy the modification policy
 		if isModified {
+			logger.Debugf("Proposed configuration item of type %v and key %s on chain %s has been modified", config.Type, config.Key, cm.chainID)
+
 			if config.LastModified != seq {
 				return nil, fmt.Errorf("Key %v for type %v was modified, but its LastModified %d does not equal current configtx Sequence %d", config.Key, config.Type, config.LastModified, seq)
+			}
+
+			// Get the modification policy for this config item if one was previously specified
+			// or the default if this is a new config item
+			var policy policies.Policy
+			oldItem, ok := cm.configuration[config.Type][config.Key]
+			if ok {
+				policy, _ = cm.PolicyManager().GetPolicy(oldItem.ModificationPolicy)
+			} else {
+				policy = defaultModificationPolicy
+			}
+
+			// Get signatures
+			signedData, err := entry.AsSignedData()
+			if err != nil {
+				return nil, err
+			}
+
+			// Ensure the policy is satisfied
+			if err = policy.Evaluate(signedData); err != nil {
+				return nil, err
 			}
 		}
 
 		// Ensure the type handler agrees the config is well formed
-		err = cm.handlers[config.Type].ProposeConfig(config)
+		logger.Debugf("Proposing configuration item of type %v for key %s on chain %s", config.Type, config.Key, cm.chainID)
+		err = cm.Initializer.Handlers()[config.Type].ProposeConfig(config)
 		if err != nil {
-			return nil, fmt.Errorf("Error proposing configuration item %s of type %d: %s", config.Key, config.Type, err)
+			return nil, fmt.Errorf("Error proposing configuration item of type %v for key %s on chain %s: %s", config.Type, config.Key, chainID, err)
 		}
 
 		configMap[config.Type][config.Key] = config

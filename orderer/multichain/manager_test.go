@@ -103,13 +103,29 @@ func TestGetConfigTxFailure(t *testing.T) {
 }
 
 // This test essentially brings the entire system up and is ultimately what main.go will replicate
+func TestNoSystemChain(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("Should have panicked when starting without a system chain")
+		}
+	}()
+
+	lf := ramledger.New(10)
+
+	consenters := make(map[string]Consenter)
+	consenters[conf.Genesis.OrdererType] = &mockConsenter{}
+
+	NewManagerImpl(lf, consenters, &xxxCryptoHelper{})
+}
+
+// This test essentially brings the entire system up and is ultimately what main.go will replicate
 func TestManagerImpl(t *testing.T) {
 	lf, rl := NewRAMLedgerAndFactory(10)
 
 	consenters := make(map[string]Consenter)
 	consenters[conf.Genesis.OrdererType] = &mockConsenter{}
 
-	manager := NewManagerImpl(lf, consenters)
+	manager := NewManagerImpl(lf, consenters, &xxxCryptoHelper{})
 
 	_, ok := manager.GetChain("Fake")
 	if ok {
@@ -155,7 +171,7 @@ func TestSignatureFilter(t *testing.T) {
 	consenters := make(map[string]Consenter)
 	consenters[conf.Genesis.OrdererType] = &mockConsenter{}
 
-	manager := NewManagerImpl(lf, consenters)
+	manager := NewManagerImpl(lf, consenters, &xxxCryptoHelper{})
 
 	cs, ok := manager.GetChain(provisional.TestChainID)
 
@@ -193,7 +209,7 @@ func TestNewChain(t *testing.T) {
 	consenters := make(map[string]Consenter)
 	consenters[conf.Genesis.OrdererType] = &mockConsenter{}
 
-	manager := NewManagerImpl(lf, consenters)
+	manager := NewManagerImpl(lf, consenters, &xxxCryptoHelper{})
 
 	generator := provisional.New(conf)
 	items := generator.TemplateItems()

@@ -19,6 +19,7 @@ package multichain
 import (
 	"bytes"
 
+	"github.com/hyperledger/fabric/common/chainconfig"
 	"github.com/hyperledger/fabric/common/configtx"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/orderer/common/filter"
@@ -39,6 +40,7 @@ type limitedSupport interface {
 	ChainID() string
 	PolicyManager() policies.Manager
 	SharedConfig() sharedconfig.Manager
+	ChainConfig() chainconfig.Descriptor
 	Enqueue(env *cb.Envelope) bool
 }
 
@@ -172,7 +174,7 @@ func (sc *systemChain) authorize(configEnvelope *cb.ConfigurationEnvelope) cb.St
 	}
 
 	ok := false
-	for _, chainCreatorPolicy := range sc.support.SharedConfig().ChainCreators() {
+	for _, chainCreatorPolicy := range sc.support.SharedConfig().ChainCreationPolicyNames() {
 		if chainCreatorPolicy == creationPolicy.Policy {
 			ok = true
 			break
@@ -193,7 +195,7 @@ func (sc *systemChain) authorize(configEnvelope *cb.ConfigurationEnvelope) cb.St
 	// XXX actually do policy signature validation
 	_ = policy
 
-	configHash := configtx.HashItems(configEnvelope.Items[1:])
+	configHash := configtx.HashItems(configEnvelope.Items[1:], sc.support.ChainConfig().HashingAlgorithm())
 
 	if !bytes.Equal(configHash, creationPolicy.Digest) {
 		logger.Debugf("Validly signed chain creation did not contain correct digest for remaining configuration %x vs. %x", configHash, creationPolicy.Digest)
@@ -203,7 +205,7 @@ func (sc *systemChain) authorize(configEnvelope *cb.ConfigurationEnvelope) cb.St
 	return cb.Status_SUCCESS
 }
 
-func (sc *systemChain) inspect(configTxManager configtx.Manager, policyManager policies.Manager, sharedConfigManager sharedconfig.Manager) cb.Status {
+func (sc *systemChain) inspect(configResources *configResources) cb.Status {
 	// XXX decide what it is that we will require to be the same in the new configuration, and what will be allowed to be different
 	// Are all keys allowed? etc.
 
@@ -241,12 +243,12 @@ func (sc *systemChain) authorizeAndInspect(configTx *cb.Envelope) cb.Status {
 		return status
 	}
 
-	configTxManager, policyManager, sharedConfigManager, err := newConfigTxManagerAndHandlers(configEnvelope)
+	configResources, err := newConfigResources(configEnvelope)
 	if err != nil {
 		logger.Debugf("Failed to create config manager and handlers: %s", err)
 		return cb.Status_BAD_REQUEST
 	}
 
 	// Make sure that the configuration does not modify any of the orderer
-	return sc.inspect(configTxManager, policyManager, sharedConfigManager)
+	return sc.inspect(configResources)
 }

@@ -19,8 +19,8 @@ package mock
 import (
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
-	"github.com/hyperledger/fabric/gossip/proto"
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/gossip/util"
+	"github.com/hyperledger/fabric/protos/gossip"
 )
 
 // Mock which aims to simulate socket
@@ -61,12 +61,7 @@ type commMock struct {
 	done chan struct{}
 }
 
-var logger *logging.Logger // package-level logger
-
-func init() {
-	logger = logging.MustGetLogger("mockComm")
-	logging.SetLevel(logging.DEBUG, logger.Module)
-}
+var logger = util.GetLogger(util.LoggingMockModule, "")
 
 // NewCommMock creates mocked communication object
 func NewCommMock(id string, members map[string]*socketMock) comm.Comm {
@@ -186,4 +181,3 @@ func (mock *commMock) Stop() {
 func (mock *commMock) BlackListPKIid(PKIid common.PKIidType) {
 	// NOOP
 }
-
