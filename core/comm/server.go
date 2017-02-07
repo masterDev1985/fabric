@@ -181,8 +181,9 @@ func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerC
 	}
 
 	// Use an interceptor to collect metrics on traffic
-	serverOpts = append(grpc.UnaryInterceptor(UnaryMetricsInterceptor), serverOpts)
+	serverOpts = append(serverOpts, grpc.UnaryInterceptor(UnaryMetricsInterceptor))
 
+	fmt.Println("STARTING GARI'S GRPC SERVER")
 	grpcServer.server = grpc.NewServer(serverOpts...)
 
 	return grpcServer, nil
