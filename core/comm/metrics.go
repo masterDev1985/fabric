@@ -24,6 +24,7 @@ import (
 )
 
 var logger = logging.MustGetLogger("orderer/metrics")
+var client, _ = statsd.NewClient("127.0.0.1:8125", "unary_interceptor")
 
 // UnaryMetricsInterceptor intercepts Unary traffic and sends statsd metrics.
 func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
@@ -32,7 +33,6 @@ func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.Un
 
 	// Send a metric to statsd
 	logger.Debug("Sending statsd metric")
-	client, _ := statsd.NewClient("127.0.0.1:8125", "unary_interceptor")
 	client.Inc("interceptions", 1, 1.0)
 
 	// Call handler to complete the RPC reqest, the same as next() in express
@@ -43,6 +43,9 @@ func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.Un
 func StreamMetricsInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	// Print out information about the steam
 	logger.Debugf("StreamMetricsInterceptor called for method: %s", info.FullMethod)
+
+	logger.Debugf("Updating message count for metdhod:", info.FullMethod)
+	client.Inc("method_"+info.FullMethod, 1, 1.0)
 
 	// Call handler to pass the RPC request along
 	return handler(srv, ss)
