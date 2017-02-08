@@ -18,17 +18,20 @@ package comm
 
 import (
 	"github.com/cactus/go-statsd-client/statsd"
+	logging "github.com/op/go-logging"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
+var logger = logging.MustGetLogger("orderer/metrics")
+
 // UnaryMetricsInterceptor intercepts Unary traffic and sends statsd metrics.
 func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 	// Print out the grpc traffic info.  Anything will do
-	commLogger.Debug("UnaryMetricsInterceptor called")
+	logger.Debug("UnaryMetricsInterceptor called")
 
 	// Send a metric to statsd
-	commLogger.Debug("Sending statsd metric")
+	logger.Debug("Sending statsd metric")
 	client, _ := statsd.NewClient("127.0.0.1:8125", "unary_interceptor")
 	client.Inc("interceptions", 1, 1.0)
 
