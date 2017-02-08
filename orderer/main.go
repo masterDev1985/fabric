@@ -69,6 +69,7 @@ func main() {
 	secureConfig := comm.SecureServerConfig{
 		UseTLS: conf.General.TLS.Enabled,
 	}
+	logger.Infof("STARTING GARI'S GRPCSERVER")
 	grpcServer, err := comm.NewGRPCServerFromListener(lis, secureConfig)
 	if err != nil {
 		fmt.Println("Failed to return new GRPC server: ", err)
