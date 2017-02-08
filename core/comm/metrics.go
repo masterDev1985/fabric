@@ -38,3 +38,12 @@ func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.Un
 	// Call handler to complete the RPC reqest, the same as next() in express
 	return handler(ctx, req)
 }
+
+// StreamMetricsInterceptor intercepts stream traffic and sends statsd metrics.
+func StreamMetricsInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	// Print out information about the steam
+	logger.Debugf("StreamMetricsInterceptor called for method: %s", info.FullMethod)
+
+	// Call handler to pass the RPC request along
+	return handler(srv, ss)
+}
