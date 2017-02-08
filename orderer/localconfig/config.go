@@ -44,10 +44,21 @@ type General struct {
 	MaxWindowSize uint32
 	ListenAddress string
 	ListenPort    uint16
+	TLS           TLS
 	GenesisMethod string
 	GenesisFile   string
 	Profile       Profile
 	LogLevel      string
+}
+
+//TLS contains config used to configure TLS
+type TLS struct {
+	Enabled           bool
+	PrivateKey        string
+	Certificate       string
+	RootCAs           []string
+	ClientAuthEnabled bool
+	ClientRootCAs     []string
 }
 
 // Genesis contains config which is used by the provisional bootstrapper
@@ -87,6 +98,7 @@ type Kafka struct {
 	Retry   Retry
 	Verbose bool
 	Version sarama.KafkaVersion
+	TLS     TLS
 }
 
 // Retry contains config for the reconnection attempts to the Kafka brokers
@@ -138,6 +150,9 @@ var defaults = TopLevel{
 		},
 		Verbose: false,
 		Version: sarama.V0_9_0_1,
+		TLS: TLS{
+			Enabled: false,
+		},
 	},
 	Genesis: Genesis{
 		OrdererType:  "solo",
@@ -177,6 +192,12 @@ func (c *TopLevel) completeInitialization() {
 			c.General.GenesisMethod = defaults.General.GenesisMethod
 		case c.General.GenesisFile == "":
 			c.General.GenesisFile = defaults.General.GenesisFile
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.Certificate == "":
+			logger.Panicf("General.Kafka.TLS.Certificate must be set if General.Kafka.TLS.Enabled is set to true.")
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.PrivateKey == "":
+			logger.Panicf("General.Kafka.TLS.PrivateKey must be set if General.Kafka.TLS.Enabled is set to true.")
+		case c.Kafka.TLS.Enabled && c.Kafka.TLS.RootCAs == nil:
+			logger.Panicf("General.Kafka.TLS.CertificatePool must be set if General.Kafka.TLS.Enabled is set to true.")
 		case c.General.Profile.Enabled && (c.General.Profile.Address == ""):
 			logger.Infof("Profiling enabled and General.Profile.Address unset, setting to %s", defaults.General.Profile.Address)
 			c.General.Profile.Address = defaults.General.Profile.Address
