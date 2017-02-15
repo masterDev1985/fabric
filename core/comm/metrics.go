@@ -17,10 +17,10 @@ limitations under the License.
 package comm
 
 import (
-        "github.com/cactus/go-statsd-client/statsd"
-        logging "github.com/op/go-logging"
-        "golang.org/x/net/context"
-        "google.golang.org/grpc"
+	"github.com/cactus/go-statsd-client/statsd"
+	logging "github.com/op/go-logging"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 var logger = logging.MustGetLogger("orderer/metrics")
@@ -29,26 +29,25 @@ var streamClient, _ = statsd.NewClient("127.0.0.1:8125", "stream_interceptor")
 
 // UnaryMetricsInterceptor intercepts Unary traffic and sends statsd metrics.
 func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
-        // Print out the grpc traffic info.  Anything will do
-        logger.Debug("UnaryMetricsInterceptor called for method: %s", info.FullMethod)
+	// Print out the grpc traffic info.  Anything will do
+	logger.Debug("UnaryMetricsInterceptor called for method: %s", info.FullMethod)
 
-        // Send a metric to statsd
-        logger.Debugf("Updating message count for method: %s", info.FullMethod)
-        unaryClient.Inc("method_"+info.FullMethod, 1, 1.0)
+	// Send a metric to statsd
+	logger.Debugf("Updating message count for method: %s", info.FullMethod)
+	unaryClient.Inc("method_"+info.FullMethod, 1, 1.0)
 
-        // Call handler to complete the RPC reqest, the same as next() in express
-        return handler(ctx, req)
+	// Call handler to complete the RPC reqest, the same as next() in express
+	return handler(ctx, req)
 }
 
 // StreamMetricsInterceptor intercepts stream traffic and sends statsd metrics.
 func StreamMetricsInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-        // Print out information about the steam
-        logger.Debugf("StreamMetricsInterceptor called for method: %s", info.FullMethod)
+	// Print out information about the steam
+	logger.Debugf("StreamMetricsInterceptor called for method: %s", info.FullMethod)
 
-        logger.Debugf("Updating message count for method: %s", info.FullMethod)
-        streamClient.Inc("method_"+info.FullMethod, 1, 1.0)
+	logger.Debugf("Updating message count for method: %s", info.FullMethod)
+	streamClient.Inc("method_"+info.FullMethod, 1, 1.0)
 
-        // Call handler to pass the RPC request along
-        return handler(srv, ss)
+	// Call handler to pass the RPC request along
+	return handler(srv, ss)
 }
-
