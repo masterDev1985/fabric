@@ -24,8 +24,8 @@ import (
 )
 
 var logger = logging.MustGetLogger("orderer/metrics")
-var unaryClient, _ = statsd.NewClient("127.0.0.1:8125", "unary_interceptor")
-var streamClient, _ = statsd.NewClient("127.0.0.1:8125", "stream_interceptor")
+var unaryClient, _ = statsd.NewClient("10.0.2.15:8125", "unary_interceptor")
+var streamClient, _ = statsd.NewClient("10.0.2.15:8125", "stream_interceptor")
 
 // UnaryMetricsInterceptor intercepts Unary traffic and sends statsd metrics.
 func UnaryMetricsInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
