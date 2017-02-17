@@ -65,7 +65,7 @@ type MockRequest struct {
 }
 
 func MockStreamHandler(srv interface{}, stream grpc.ServerStream) error {
-
+	return nil
 }
 
 func TestUnaryInterceptorReturns(t *testing.T) {
@@ -96,4 +96,9 @@ func TestStreamInterceptorReturns(t *testing.T) {
 
 	err := StreamMetricsInterceptor(srv, ss, &info, MockStreamHandler)
 
+	if err != nil {
+		t.Fatalf("StreamInterceptor threw an error: %s", err.Error)
+	} else {
+		t.Log("StreamInterceptor completed successfully")
+	}
 }
