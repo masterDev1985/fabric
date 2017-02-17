@@ -27,51 +27,73 @@ import (
 	"google.golang.org/grpc"
 )
 
-type testContext struct{}
+// MockContext is an argument to be used to test UnaryInterceptor
+type MockContext struct{}
 
-func (tc *testContext) Deadline() (deadline time.Time, ok bool) {
+func (tc *MockContext) Deadline() (deadline time.Time, ok bool) {
 	return time.Now(), true
 }
 
-func (tc *testContext) Done() <-chan struct{} {
+func (tc *MockContext) Done() <-chan struct{} {
 	return nil
 }
 
-func (tc *testContext) Err() error {
+func (tc *MockContext) Err() error {
 	return errors.New("Dummy context error")
 }
 
-func (tc *testContext) Value(key interface{}) interface{} {
+func (tc *MockContext) Value(key interface{}) interface{} {
 	return nil
 }
 
-func interceptorTestHandler(ctx context.Context, req interface{}) (interface{}, error) {
-	hackyReturn := testStruct{ctx: ctx, req: req}
-	return hackyReturn, nil
-}
-
-type testReq struct {
-	value string
-}
-
-type testStruct struct {
+// MockUnaryHandlerResult lets MockUnaryHandler return all its arguments will still
+// implementing the UnaryHandler interface
+type MockUnaryHandlerResult struct {
 	ctx context.Context
 	req interface{}
 }
 
+// MockUnaryHandler gives us back everything that the UnaryInterceptor passed to it
+func MockUnaryHandler(ctx context.Context, req interface{}) (interface{}, error) {
+	hackyReturn := MockUnaryHandlerResult{ctx: ctx, req: req}
+	return hackyReturn, nil
+}
+
+// MockRequest is something we can pass into interceptors to test them
+type MockRequest struct {
+	value string
+}
+
+func MockStreamHandler(srv interface{}, stream grpc.ServerStream) error {
+
+}
+
 func TestUnaryInterceptorReturns(t *testing.T) {
 
-	var ctx = &testContext{}
-	var req = testReq{value: "test"}
-	var info = grpc.UnaryServerInfo{Server: nil, FullMethod: "/TestMethod"}
+	t.Parallel()
+	var ctx = &MockContext{}
+	var req = MockRequest{value: "test"}
+	var info = grpc.UnaryServerInfo{Server: nil, FullMethod: "/TestService/TestUnaryMethod"}
 
-	testResult, _ := UnaryMetricsInterceptor(ctx, req, &info, interceptorTestHandler)
+	testResult, _ := UnaryMetricsInterceptor(ctx, req, &info, MockUnaryHandler)
 
-	if testResultConverted, ok := testResult.(testStruct); ok {
+	if testResultConverted, ok := testResult.(MockUnaryHandlerResult); ok {
 		assert.Equal(t, ctx, testResultConverted.ctx)
 		assert.Equal(t, req, testResultConverted.req)
 		t.Log("UnaryInterceptor passes along its inputs, exactly as it should")
 	} else {
 		t.Fatal("Whatever came back from UnaryMetricsInterceptor was not what we passed in")
 	}
+}
+
+func TestStreamInterceptorReturns(t *testing.T) {
+	t.Parallel()
+
+	var srv interface{}
+	var ss grpc.ServerStream
+	var info = grpc.StreamServerInfo{FullMethod: "/TestService/TestStreamMethod",
+		IsClientStream: false, IsServerStream: false}
+
+	err := StreamMetricsInterceptor(srv, ss, &info, MockStreamHandler)
+
 }
