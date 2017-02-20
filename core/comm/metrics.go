@@ -23,9 +23,7 @@ import (
 	"google.golang.org/grpc"
 )
 
-var logger = logging.MustGetLogger("orderer/metrics")
-var unaryClient, _ = statsd.NewClient("10.0.2.15:8125", "unary_interceptor")
-var streamClient, _ = statsd.NewClient("10.0.2.15:8125", "stream_interceptor")
+var logger = logging.MustGetLogger("comm/metrics")
 
 // StatsdInterceptor provides GRPC stream and unary interceptors that can be used to
 // generate metrics based on GRPC traffic

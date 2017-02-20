@@ -146,6 +146,25 @@ type MockRequest struct {
 	value string
 }
 
+// MockStreamHandlerResult lets MockStreamHandler pass along all it's arguments for
+// validation in our unit tests
+type MockStreamHandlerResult struct {
+	srv interface{}
+	ss  grpc.ServerStream
+}
+
+func CreateMockStreamHandler(response chan<- MockStreamHandlerResult) func(interface{}, grpc.ServerStream) error {
+	// The handler should just package up everything it was sent and send it
+	// through the channel to be validated in a unit test.
+	return func(srv interface{}, stream grpc.ServerStream) error {
+		var result = MockStreamHandlerResult{srv: srv, ss: stream}
+		go func() {
+			response <- result
+		}()
+		return nil
+	}
+}
+
 func MockStreamHandler(srv interface{}, stream grpc.ServerStream) error {
 	return nil
 }
@@ -164,9 +183,9 @@ func TestUnaryInterceptorTransparency(t *testing.T) {
 	if testResultConverted, ok := testResult.(MockUnaryHandlerResult); ok {
 		assert.Equal(t, ctx, testResultConverted.ctx)
 		assert.Equal(t, req, testResultConverted.req)
-		t.Log("UnaryInterceptor passes along its inputs, exactly as it should")
+		t.Log("UnaryMetricsInterceptor passes along all of its inputs to its handler, exactly as it should")
 	} else {
-		t.Fatal("Whatever came back from UnaryMetricsInterceptor was not what we passed in")
+		t.Fatal("UnaryMetricsInterceptor did not pass its inputs to its handler properly")
 	}
 }
 
@@ -194,28 +213,69 @@ func TestUnaryInterceptorSendsMetrics(t *testing.T) {
 		assert.Equal(t, mockStat.Function, "Inc")
 		assert.Equal(t, mockStat.Prefix, "messages")
 		assert.Equal(t, mockStat.ValueNum, int64(1))
-		t.Log("Received a metric from the UnaryInterceptor")
+		t.Log("Received a metric from the UnaryMetricsInterceptor")
 	case <-timeout:
-		t.Fatal("Never received a metric from the UnaryInterceptor")
+		t.Fatal("Never received a metric from the UnaryMetricsInterceptor")
 	}
 }
 
-/*
-func TestStreamInterceptorReturns(t *testing.T) {
-	config.SetupTestConfig("./../../orderer")
+func TestStreamInterceptorTransparency(t *testing.T) {
 	t.Parallel()
-
 	var srv interface{}
 	var ss grpc.ServerStream
 	var info = grpc.StreamServerInfo{FullMethod: "/TestService/TestStreamMethod",
 		IsClientStream: false, IsServerStream: false}
 
-	err := StreamMetricsInterceptor(srv, ss, &info, MockStreamHandler)
+	// No need to actually send metrics for this test
+	var sender, _ = statsd.NewNoopClient()
+	var interceptor = NewStatsdInterceptorWithStatter(sender)
+	response := make(chan MockStreamHandlerResult, 1)
+	interceptor.StreamMetricsInterceptor(srv, ss, &info, CreateMockStreamHandler(response))
 
-	if err != nil {
-		t.Fatalf("StreamInterceptor threw an error: %s", err.Error)
-	} else {
-		t.Log("StreamInterceptor completed successfully")
+	// Use a timeout to complete the test if the metrics are never sent
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		timeout <- true
+	}()
+
+	select {
+	case mockResult := <-response:
+		assert.Equal(t, mockResult.srv, srv)
+		assert.Equal(t, mockResult.ss, ss)
+		t.Log("StreamMetricsInterceptor passes along all of its inputs to its handler, exactly as it should")
+	case <-timeout:
+		t.Fatal("StreamMetricsInterceptor did not pass its inputs to its handler properly")
 	}
 }
-*/
+
+func TestStreamInterceptorSendsMetrics(t *testing.T) {
+	t.Parallel()
+	var srv interface{}
+	var ss grpc.ServerStream
+	var info = grpc.StreamServerInfo{FullMethod: "/TestService/TestStreamMethod",
+		IsClientStream: false, IsServerStream: false}
+
+	// No need to actually send metrics for this test
+	response := make(chan MockStat, 1)
+	var sender = NewMockStatSender("mockPrefix", response)
+	var interceptor = NewStatsdInterceptorWithStatter(sender)
+	interceptor.StreamMetricsInterceptor(srv, ss, &info, MockStreamHandler)
+
+	// Use a timeout to complete the test if the metrics are never sent
+	timeout := make(chan bool, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		timeout <- true
+	}()
+
+	select {
+	case mockStat := <-response:
+		assert.Equal(t, mockStat.Function, "Inc")
+		assert.Equal(t, mockStat.Prefix, "messages")
+		assert.Equal(t, mockStat.ValueNum, int64(1))
+		t.Log("Received a metric from the StreamMetricsInterceptor")
+	case <-timeout:
+		t.Fatal("Never received a metric from the StreamMetricsInterceptor")
+	}
+}
