@@ -25,6 +25,8 @@ import (
 	"net"
 	"sync"
 
+	"strconv"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -46,6 +48,13 @@ type SecureServerConfig struct {
 	//Set of PEM-encoded X509 certificate authorities to use when verifying
 	//client certificates
 	ClientRootCAs [][]byte
+	// Controls whether the GRPCServer uses an interceptor to send metrics to a
+	// statsd endpoint
+	SendMetrics bool
+	// The host of the statsd endpoint
+	StatsdHost string
+	// The port of the statsd endpoint
+	StatsdPort uint16
 }
 
 //GRPCServer defines an interface representing a GRPC-based server
@@ -181,14 +190,17 @@ func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerC
 	}
 
 	// Use an interceptor to collect metrics on traffic
-	var interceptor, err = NewStatsdInterceptor("127.0.0.1:8125")
-	if err != nil {
-		logger.Error("Failed to enable GRPCServer metrics interceptors")
-		return grpcServer, err
-	}
+	if secureConfig.SendMetrics {
+		statsdAddress := secureConfig.StatsdHost + ":" + strconv.Itoa(int(secureConfig.StatsdPort))
+		var interceptor, err = NewStatsdInterceptor(statsdAddress)
+		if err != nil {
+			logger.Error("Failed to enable GRPCServer metrics interceptors")
+			return nil, err
+		}
 
-	serverOpts = append([]grpc.ServerOption{grpc.UnaryInterceptor(interceptor.UnaryMetricsInterceptor),
-		grpc.StreamInterceptor(interceptor.StreamMetricsInterceptor)}, serverOpts...)
+		serverOpts = append([]grpc.ServerOption{grpc.UnaryInterceptor(interceptor.UnaryMetricsInterceptor),
+			grpc.StreamInterceptor(interceptor.StreamMetricsInterceptor)}, serverOpts...)
+	}
 
 	grpcServer.server = grpc.NewServer(serverOpts...)
 

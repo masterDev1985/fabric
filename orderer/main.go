@@ -76,7 +76,10 @@ func main() {
 
 	//Create GRPC server - return if an error occurs
 	secureConfig := comm.SecureServerConfig{
-		UseTLS: conf.General.TLS.Enabled,
+		UseTLS:      conf.General.TLS.Enabled,
+		SendMetrics: conf.Metrics.Enabled,
+		StatsdHost:  conf.Metrics.StatsdAddress,
+		StatsdPort:  conf.Metrics.StatsdPort,
 	}
 	grpcServer, err := comm.NewGRPCServerFromListener(lis, secureConfig)
 	if err != nil {
