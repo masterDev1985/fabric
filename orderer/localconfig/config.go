@@ -126,6 +126,12 @@ type RuntimeAndGenesis struct {
 	genesis *Genesis
 }
 
+// Metrics contains config for metrics reporting
+type Metrics struct {
+	Enabled       bool
+	StatsdAddress string
+}
+
 // TopLevel directly corresponds to the orderer config yaml
 // Note, for non 1-1 mappings, you may append
 // something like `mapstructure:"weirdFoRMat"` to
@@ -138,6 +144,7 @@ type TopLevel struct {
 	Kafka      Kafka
 	Genesis    Genesis
 	SbftLocal  SbftLocal
+	Metrics    Metrics
 }
 
 var defaults = TopLevel{
@@ -187,6 +194,10 @@ var defaults = TopLevel{
 		CertFile:     "sbft/testdata/cert1.pem",
 		KeyFile:      "sbft/testdata/key.pem",
 		DataDir:      "/tmp",
+	},
+	Metrics: Metrics{
+		Enabled:       false,
+		StatsdAddress: "",
 	},
 }
 
@@ -240,6 +251,8 @@ func (c *TopLevel) completeInitialization() {
 		case c.Kafka.Retry.Stop == 0*time.Second:
 			logger.Infof("Kafka.Retry.Stop unset, setting to %v", defaults.Kafka.Retry.Stop)
 			c.Kafka.Retry.Stop = defaults.Kafka.Retry.Stop
+		case c.Metrics.Enabled && c.Metrics.StatsdAddress == "":
+			logger.Panic("Metrics.StatsdAddress must be set if Metrics.Enabled is set to true.")
 		default:
 			// A bit hacky, but its type makes it impossible to test for a nil value.
 			// This may be overwritten by the Kafka orderer upon instantiation.

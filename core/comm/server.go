@@ -46,6 +46,11 @@ type SecureServerConfig struct {
 	//Set of PEM-encoded X509 certificate authorities to use when verifying
 	//client certificates
 	ClientRootCAs [][]byte
+	// Controls whether the GRPCServer uses an interceptor to send metrics to a
+	// statsd endpoint
+	SendMetrics bool
+	// The address of the statsd endpoint where metrics will be sent
+	StatsdAddress string
 }
 
 //GRPCServer defines an interface representing a GRPC-based server
@@ -179,6 +184,19 @@ func NewGRPCServerFromListener(listener net.Listener, secureConfig SecureServerC
 				"ServerCertificate when UseTLS is true")
 		}
 	}
+
+	// Use an interceptor to collect metrics on traffic
+	if secureConfig.SendMetrics {
+		var interceptor, err = NewStatsdInterceptor(secureConfig.StatsdAddress)
+		if err != nil {
+			logger.Error("Failed to enable GRPCServer metrics interceptors")
+			return nil, err
+		}
+
+		serverOpts = append([]grpc.ServerOption{grpc.UnaryInterceptor(interceptor.UnaryMetricsInterceptor),
+			grpc.StreamInterceptor(interceptor.StreamMetricsInterceptor)}, serverOpts...)
+	}
+
 	grpcServer.server = grpc.NewServer(serverOpts...)
 
 	return grpcServer, nil

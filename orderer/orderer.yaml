@@ -179,3 +179,17 @@ Genesis:
         # Peers (PeerCommAddr) with the path of their cert
         Peers:
             ":6101": "sbft/testdata/cert1.pem"
+
+################################################################################
+#
+#   SECTION: Metrics
+#
+#   - This section controls metrics reporting in the orderer.
+#
+################################################################################
+Metrics:
+    # Controls whether metrics will be sent by the orderer
+    Enabled: true
+
+    # The IP address for a StatsD daemon to send metrics to
+    StatsdAddress: "127.0.0.1:8125"
